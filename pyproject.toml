@@ -37,5 +37,10 @@ desktop = ["PySide6>=6.6"]
 [project.scripts]
 shinobu = "shinobu_core.server.cli:main"
 
+[project.urls]
+Homepage = "https://github.com/zanex-dev/shinobu"
+Repository = "https://github.com/zanex-dev/shinobu"
+Issues = "https://github.com/zanex-dev/shinobu/issues"
+
 [tool.setuptools.packages.find]
 include = ["shinobu_core*"]

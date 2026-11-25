@@ -98,8 +98,8 @@ No cloud server, no public domain, and no Telegram bot required.
 ### 1. Install `shinobu-core` (Zero Dependencies)
 
 ```bash
-git clone <YOUR_REPO_URL> shinobu-public
-cd shinobu-public
+git clone https://github.com/zanex-dev/shinobu.git
+cd shinobu
 pip install -e .
 ```
 

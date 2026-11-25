@@ -98,8 +98,8 @@ grep -rnE "HTTPConnection|urlopen|subprocess|getFile|0\.0\.0\.0|shell=True" ./sh
 ### 1. 安装 `shinobu-core`（零依赖）
 
 ```bash
-git clone <YOUR_REPO_URL> shinobu-public
-cd shinobu-public
+git clone https://github.com/zanex-dev/shinobu.git
+cd shinobu
 pip install -e .
 ```
 
