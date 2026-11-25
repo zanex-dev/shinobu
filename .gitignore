@@ -1,0 +1,34 @@
+# Python artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Tool caches & virtual environments
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+
+# Local runtime state, databases & audio outputs
+*.db
+*.sqlite3
+*.sqlite3-wal
+*.sqlite3-shm
+*.ogg
+*.mp3
+*.wav
+.shinobu_local/
+_versions/
+
+# Secrets & environment configs
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+*.json.secret

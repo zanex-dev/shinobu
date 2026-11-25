@@ -1,0 +1,44 @@
+# Shinobu Cloud Always-On Daemon (systemd unit)
+# Pure white-hat template — replace placeholder paths/tokens in /etc/shinobu/cloud.env.
+#
+# Install:
+#   sudo cp deploy/shinobu-cloud.service /etc/systemd/system/shinobu-cloud.service
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now shinobu-cloud.service
+#
+# Optional companion service for Telegram four-lock bridge (shinobu-telegram.service):
+#   Duplicate this unit and change ExecStart to:
+#   /opt/shinobu/.venv/bin/shinobu --home /var/lib/shinobu/home telegram
+
+[Unit]
+Description=Shinobu Cloud Always-On Loopback Daemon (Hybrid Engine + Remote MCP)
+After=network-online.target tailscaled.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=shinobu
+Group=shinobu
+WorkingDirectory=/var/lib/shinobu
+EnvironmentFile=/etc/shinobu/cloud.env
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/shinobu/.venv/bin/shinobu --home /var/lib/shinobu/home serve --host 127.0.0.1 --port 18790 --engine hybrid --cloud-sandbox /var/lib/shinobu/sandbox
+Restart=always
+RestartSec=5
+TimeoutStopSec=20
+
+# Security hardening (loopback-only daemon, least privilege)
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/shinobu
+LockPersonality=true
+RestrictRealtime=true
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=shinobu-cloud
+
+[Install]
+WantedBy=multi-user.target

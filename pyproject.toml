@@ -1,0 +1,41 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "shinobu-core"
+version = "1.0.0"
+description = "Zero-dependency microkernel, protocol contracts, and fault-isolated plugin foundation for Shinobu."
+license = { text = "MIT" }
+requires-python = ">=3.10"
+authors = [
+    { name = "zanex", email = "310354113+zanex-dev@users.noreply.github.com" }
+]
+keywords = [
+    "shinobu",
+    "microkernel",
+    "plugin-architecture",
+    "protocol",
+    "agent-runtime"
+]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Libraries :: Application Frameworks",
+]
+dependencies = []
+
+[project.optional-dependencies]
+agy-sdk = ["google-antigravity"]
+desktop = ["PySide6>=6.6"]
+
+[project.scripts]
+shinobu = "shinobu_core.server.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["shinobu_core*"]

@@ -1,0 +1,177 @@
+<!-- Optional hero banner: place assets/banner.png to enable -->
+
+<h1 align="center">Shinobu (<code>shinobu-core</code>)</h1>
+
+<p align="center">
+  <strong>Zero-Dependency Microkernel AI Companion Runtime — One Unified Codebase for Local Desktop/Web Play and 7×24 Privacy-Isolated Cloud Always-On Hosting.</strong>
+</p>
+
+<p align="center">
+  <a href="pyproject.toml"><img src="https://img.shields.io/badge/version-v1.0.0-be123c" alt="Version v1.0.0" /></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-e11d48.svg" alt="License: MIT" /></a>
+  <a href="pyproject.toml"><img src="https://img.shields.io/badge/python-3.10%2B%20(0%20deps)-3776AB.svg" alt="Python 3.10+ (0 deps)" /></a>
+  <img src="https://img.shields.io/badge/network-127.0.0.1%20%2F%20Tailscale-059669" alt="Loopback and Tailscale" />
+  <img src="https://img.shields.io/badge/telegram-4--Lock%20Isolated-0284c7" alt="Telegram 4-Lock Isolated" />
+</p>
+
+<p align="center">
+  <a href="README.md"><strong>English</strong></a> · <a href="README_ZH.md"><strong>简体中文</strong></a> · <a href="deploy/gcp_setup.md">GCP 7×24 Cloud Guide (ZH)</a> · <a href="CHANGELOG.md">Changelog</a>
+</p>
+
+---
+
+## 🔒 Zero-Trust Security Self-Verification (Audit in 3 Seconds)
+
+`shinobu-core` is built from day one with strict physical and protocol boundaries so you can inspect the entire runtime in seconds:
+
+1. **Zero Third-Party Core Dependencies (`dependencies = []`)**: The core runtime, daemon, Web Memory Console, memory/reminder SQLite store, hybrid router, edge node, and Telegram bridge run 100% on the Python `>= 3.10` standard library — zero external `pip` supply-chain risk. Only the optional desktop floating pet requires `pip install -e ".[desktop]"` (`PySide6>=6.6`).
+2. **Loopback-First Daemon & Hardened Edge Node**:
+   - The HTTP/MCP daemon binds to `127.0.0.1` by default (never exposing open ports to the public internet).
+   - `EdgeNodeServer` (`shinobu node`) **hard-rejects `0.0.0.0` and any public IP**, restricts execution to `--allowed-root`, and strictly forbids `shell=True`.
+3. **KV-Cache-Friendly Frozen L0 Prefix**: Built-in memory & reminder tools (`build_memory_tools`) append tool schemas at the tail without mutating the frozen L0 system prompt prefix, preserving prompt KV-cache hit rates.
+4. **Telegram 4-Lock Physical Isolation**:
+   - **No groups**: rejects all group/supergroup/channel messages;
+   - **Single-user allowlist**: only the configured owner chat ID can interact;
+   - **No forwards**: ignores forwarded messages to prevent indirect prompt injection;
+   - **Zero-media / never `getFile`**: drops media attachments and never downloads user photos/files from Telegram servers.
+5. **Plain-Text Auditable Source Only**: Distributed strictly as readable Python source code (no closed-source binary installers).
+6. **3-Second Source Audit Command**:
+
+```powershell
+# PowerShell — inspect all network, subprocess, bind-address, and Telegram media boundaries:
+Get-ChildItem .\shinobu_core -Recurse -Filter *.py | Select-String -Pattern "HTTPConnection|urlopen|subprocess|getFile|0\.0\.0\.0|shell=True"
+```
+
+```bash
+# Linux / macOS
+grep -rnE "HTTPConnection|urlopen|subprocess|getFile|0\.0\.0\.0|shell=True" ./shinobu_core
+```
+
+---
+
+## 🧭 Architecture: One Core, Local & Cloud Unified
+
+The exact same `shinobu-core` package powers both a 3-minute pure-local companion and a 7×24 cloud-hosted brain with local PC edge tentacles:
+
+```text
+                       ┌─────────────────────────────────────────────┐
+                       │         shinobu-core (0 third-party deps)   │
+                       │  Microkernel · Memory/Timemap SQLite · TTS  │
+                       │  Orchestrator (Frozen L0 KV Prefix) · MCP   │
+                       └──────────────────────┬──────────────────────┘
+                                              │
+            ┌─────────────────────────────────┴─────────────────────────────────┐
+            ▼                                                                   ▼
+┌───────────────────────────────┐                               ┌───────────────────────────────┐
+│   Level 1: Pure Local Mode    │                               │   Level 2: 7×24 Cloud Brain   │
+│  (No cloud / no VPS needed)   │                               │  (Tailscale Serve, 0 ports)   │
+├───────────────────────────────┤                               ├───────────────────────────────┤
+│ • shinobu serve (127.0.0.1)   │                               │ • shinobu serve --engine      │
+│ • shinobu ui (Web Memory +    │   Optional Edge Tentacle      │   hybrid                      │
+│   click-to-speak TTS)         │  ◄──── shinobu node ────────► │ • shinobu telegram (4-Lock,   │
+│ • shinobu pet (Desktop Pet +  │  (Private Tailscale Mesh;     │   /remind, /voice, L1 Approve)│
+│   drawer TTS, PySide6 opt.)   │   seamless fallback on sleep) │ • POST /mcp & GCS daily backup│
+└───────────────────────────────┘                               └───────────────────────────────┘
+```
+
+---
+
+## ⚡ Quick Start — Level 1: Pure Local Experience (3 Minutes)
+
+No cloud server, no public domain, and no Telegram bot required.
+
+### 1. Install `shinobu-core` (Zero Dependencies)
+
+```bash
+git clone <YOUR_REPO_URL> shinobu-public
+cd shinobu-public
+pip install -e .
+```
+
+### 2. Start the Local Loopback Daemon & Web Memory Console
+
+```bash
+# Terminal 1 — start the local daemon on 127.0.0.1:18790
+shinobu serve
+
+# Terminal 2 — open the built-in Web Memory Console
+shinobu ui
+```
+
+In the Web Memory Console, you can chat, inspect memories & reminders, and click **`🔊 朗读` (Speak)** on any assistant bubble to play on-demand speech via `POST /api/tts` (gracefully shows a toast if no TTS backend is configured).
+
+### 3. Optional: Launch the Desktop Floating Pet
+
+Install the optional PySide6 UI extra only if you want the desktop pet window:
+
+```bash
+pip install -e ".[desktop]"
+shinobu pet
+```
+
+The pet chat drawer includes a **`🔊 朗读` (Speak)** button that synthesizes and plays the latest assistant reply (using native `winsound` on Windows with zero extra audio libraries, and graceful fallback hints on other platforms).
+
+---
+
+## ☁️ Level 2: 7×24 Cloud Always-On Brain + Local Edge Node
+
+When you are ready for an always-on companion reachable from your phone and capable of securely reaching your local PC while it is awake:
+
+1. **Zero Public Inbound Ports**: Deploy `shinobu serve --engine hybrid` on a small VM (e.g., GCP `e2-small` on **Standard Tier** for 200 GiB/month free egress) and expose HTTPS strictly inside your private tailnet via **Tailscale Serve**.
+2. **4-Lock Telegram Mobile Bridge**: Run `shinobu telegram` to chat, toggle voice notes (`/voice on` / `/voice off`), schedule reminders (`/remind 20m stretch`), inspect nodes (`/nodes`), and tap inline `[✅ Approve]` / `[❌ Reject]` buttons for L1 command approvals.
+3. **Local PC Edge Tentacle**: Run `shinobu node` on your workstation. While your PC is online, the cloud `hybrid` router seamlessly delegates supported tasks to your local engine; when your PC sleeps or exits, the cloud brain automatically falls back to its cloud engine without interruption.
+4. **Automated SQLite Hot Backups**: Daily online `.backup` snapshots synced to object storage (GCS).
+
+👉 See the step-by-step deployment & pitfall guide: **[`deploy/gcp_setup.md`](deploy/gcp_setup.md)**.
+
+---
+
+## 📖 CLI, Telegram & API Quick Reference
+
+### CLI Commands (`shinobu`)
+
+| Command | Mode | Description |
+|---|---|---|
+| `shinobu serve` | Local / Cloud | Start the `127.0.0.1` loopback HTTP/MCP daemon (supports `--engine hybrid`, etc.). |
+| `shinobu ui` | Local | Open the built-in Web Memory Console hosted by the running daemon. |
+| `shinobu pet` | Local (Optional) | Launch the floating desktop pet & chat drawer (requires `.[desktop]`). |
+| `shinobu node` | Edge Tentacle | Register this PC over Tailscale/private network (`--cloud-url`, `--bind-host`, `--allowed-root`). |
+| `shinobu telegram` | Cloud / Local | Start the 4-lock isolated Telegram long-polling bridge. |
+
+### Telegram Built-in Commands
+
+| Command | Description |
+|---|---|
+| `/status` | Inspect runtime health, active engine, and pending approval count. |
+| `/nodes` | List currently online local PC / Colab GPU edge nodes. |
+| `/voice on` / `/voice off` | Toggle on-demand voice note replies. |
+| `/remind` / `/reminders` | List pending reminders from the SQLite `timemap` schedule table. |
+| `/remind <10m\|2h\|HH:MM\|ISO> <text>` | Schedule a new reminder (relative duration, local `HH:MM`, or ISO-8601). |
+
+### Core HTTP / MCP & Agent Tool Contracts
+
+| Interface | Purpose |
+|---|---|
+| `POST /api/tts` | Synthesize speech (`{"text", "mood", "fmt": "ogg_opus"\|"mp3"\|"wav"}`); returns raw audio bytes or `503 {"error": "tts_unavailable"}`. |
+| `GET` / `POST /api/timemap` | Query and create scheduled reminders stored in SQLite `timemap`. |
+| `POST /mcp` | Remote Model Context Protocol (MCP) JSON-RPC endpoint (protected by bearer token over Tailscale). |
+| `build_memory_tools` (5 tools) | Memory read/write plus tail-appended `schedule_reminder` and `list_reminders` (zero L0 prefix mutation). |
+
+---
+
+## 🧩 Plugin Extension Boundary
+
+`shinobu-public` (`shinobu-core`) is strictly a clean, generic, white-hat microkernel foundation. Personal personas, private sensors, custom hooks, or private notebooks belong in separate external packages loaded dynamically via Python entry points:
+
+```toml
+[project.entry-points."shinobu.plugins"]
+my_extension = "my_pkg.plugin:create_plugin"
+```
+
+---
+
+## ⚠️ Disclaimer & License
+
+- This project is an open-source technical framework for personal AI runtime orchestration and local/cloud automation. Users are solely responsible for configuring their own API credentials, cloud budgets, firewall rules, and compliance with third-party platform terms of service.
+- Never commit real API keys, bearer tokens, private Tailscale hostnames, or personal data into public forks.
+- Released under the [MIT License](LICENSE) © 2026 zanex (zanex-dev).
