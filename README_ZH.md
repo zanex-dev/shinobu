@@ -51,6 +51,19 @@ grep -rnE "HTTPConnection|urlopen|subprocess|getFile|0\.0\.0\.0|shell=True" ./sh
 
 ---
 
+## ✨ 为什么选择 Shinobu？（核心优势与特性）
+
+市面上大多数 AI 伴侣要么只是前端里的**静态人设卡**（换个软件就失忆），要么堆满沉重依赖、把聊天记录硬塞进上下文导致延迟飙升与费用失控。`shinobu-core` 从底层微内核重新设计了个人伴侣运行时：
+
+1. **多端共享同一个“活体灵魂”，彻底告别静态人设卡**：一个持久运行的后台大脑 + 本地 SQLite 记忆库，同时驱动内置 Web 记忆本（`shinobu ui`）、透明悬浮桌宠（`shinobu pet`）、手机 Telegram（`shinobu telegram`）以及任何外部 OpenAI `/v1` 前端——无论在哪一端聊天，记忆、提醒与语音状态实时同源。
+2. **护 KV 缓存 L0 灵魂冻结 + 睡眠记忆蒸馏**：核心灵魂前缀经 SHA-256 冻结锁定，内置工具采用尾插式注册，最大程度守护长会话 Prompt KV 缓存命中率（降延迟、省 Token）；配合 `shinobu sleep` 与记忆蒸馏机制，把冗长对话提纯沉淀为结构化事实与剧集，避免无休止堆叠原始聊天记录。
+3. **一份零依赖同源底座，本地即玩 ↔ 云端 7×24 混动无缝升级**：核心 `dependencies = []` 纯 Python 标准库实现；纯本机 3 分钟即可跑全套，上云后开启 `--engine hybrid` 混动路由——个人电脑开机时自动借力本机算力与边端触手，关机或休眠时秒级切回云端大脑不掉线。
+4. **原生双向 MCP 枢纽（既是客户端，也是服务端）**：既可通过 `shinobu mcp` 一键探测并无损安装零 Key 社区精选 MCP 工具集，也可通过 `shinobu mcp-serve`（stdio）或云端 `POST /mcp` 将 Shinobu 的记忆与提醒反向暴露给外部 AI IDE / Agent 协作调用。
+5. **主动心跳、自然语言定提醒与三端按需情感语音**：支持聊天中随口定时提醒（`schedule_reminder` / `list_reminders`）与 Telegram `/remind`；Web 记忆本、桌宠抽屉与 Telegram 语音条三端原生打通 `POST /api/tts` 按需语音合成，未配语音后端时优雅提示、零打扰。
+6. **插件故障隔离与开箱自检**：外部私有扩展通过标准 `entry_points` 挂载，任何单个插件异常均被微内核隔离，绝不拖垮主进程；内置 `shinobu doctor` 一键诊断驱动、隔离边界与插件健康并自动脱敏密钥。
+
+---
+
 ## 🧭 架构总览：一份底座，本地与云端同源一体
 
 同一份 `shinobu-core` 代码无需分叉：在个人电脑上即可独立运行完整记忆、语音播报与桌宠；部署到云端后摇身一变为 7×24 常驻大脑，并在本机开机时自动牵手边端触手：
@@ -134,11 +147,18 @@ shinobu pet
 
 | 命令 | 场景 | 说明 |
 |---|---|---|
-| `shinobu serve` | 本地 / 云端 | 启动 `127.0.0.1` 回环 HTTP/MCP 守护进程（支持 `--engine hybrid` 等）。 |
-| `shinobu ui` | 本地 | 打开由守护进程托管的内置 Web 记忆本页面。 |
-| `shinobu pet` | 本地（可选） | 启动桌面悬浮桌宠与聊天抽屉（需先安装 `.[desktop]`）。 |
+| `shinobu init` | 初始化 | 初始化灵魂模板与本地 SQLite 记忆库。 |
+| `shinobu chat` | 本地终端 | 在终端直接与 Shinobu 单轮或交互式对话。 |
+| `shinobu sleep` | 记忆蒸馏 | 对当前活跃剧集执行睡眠记忆提炼、合并归档并平滑收口。 |
+| `shinobu serve` | 本地 / 云端 | 启动 `127.0.0.1` 回环 HTTP/SSE/MCP 守护进程（支持 `--engine hybrid` 等）。 |
+| `shinobu ui` | 本地 | 打开由守护进程托管的零依赖内置 Web 记忆本页面。 |
+| `shinobu pet` | 本地（可选） | 启动透明桌面悬浮桌宠与聊天抽屉（需先安装 `.[desktop]`）。 |
+| `shinobu compat` | 第三方前端 | 打印本机 OpenAI `/v1` 兼容端点与事件流连接信息（默认模型 ID：`shinobu`）。 |
+| `shinobu mcp` | 工具生态 | 查看、探测、无损安装精选零 Key 社区 MCP 预设或管理 MCP 桥接。 |
+| `shinobu mcp-serve` | 反向 MCP | 通过 `stdio` 将 Shinobu 暴露为标准 MCP 服务端，供外部 AI 客户端调用。 |
 | `shinobu node` | 边端触手 | 将本机作为受控边端节点接入云端（`--cloud-url`、`--bind-host`、`--allowed-root`）。 |
 | `shinobu telegram` | 云端 / 本地 | 启动四重物理锁隔离的 Telegram 长轮询桥接进程。 |
+| `shinobu status` / `doctor` | 运维自检 | 查看运行状态与插件清单，或一键体检驱动、隔离边界与脱敏凭据健康。 |
 
 ### Telegram 内置指令
 
@@ -154,10 +174,17 @@ shinobu pet
 
 | 接口 / 工具 | 说明 |
 |---|---|
+| `GET /v1/models` & `POST /v1/chat/completions` | OpenAI `/v1` 兼容对话接口（带本地回环白名单 CORS 保护，默认模型 `shinobu`）。 |
 | `POST /api/tts` | 按需语音合成（入参 `{"text", "mood", "fmt": "ogg_opus"\|"mp3"\|"wav"}`），成功返回音频字节，未配置返回 `503 {"error": "tts_unavailable"}`。 |
 | `GET` / `POST /api/timemap` | 读写 SQLite `timemap` 提醒/日程表。 |
 | `POST /mcp` | 远程 MCP 协议入口（经 Tailscale + Bearer Token 鉴权）。 |
 | `build_memory_tools`（5 工具） | 记忆读写 + 尾插式 `schedule_reminder` / `list_reminders`（严守 L0 前缀冻结）。 |
+
+### 🔌 接入第三方前端（SillyTavern / Open WebUI / VTuber 壳）
+
+`shinobu-core` 默认完全独立运行，不依赖任何第三方前端；如果你仍希望在 **SillyTavern（傻酒馆）**、Cherry Studio、Open WebUI 或本机 VTuber/桌宠壳（如 Project AIRI、Open-LLM-VTuber、VPetLLM）中直接复用同一套灵魂与记忆，运行 `shinobu compat` 获取本机 `/v1` 地址与 Bearer Token 填入客户端即可无缝迁入。
+
+> **对接避坑提示**：接入第三方客户端时，请将其视为**纯粹的对话皮肤**——建议关闭前端侧的**向量记忆 / 自动摘要 / 动态世界书注入、前端状态栏宏以及客户端内置 TTS 插件**，将记忆蒸馏、语音合成与护 KV L0 前缀冻结全权交由 Shinobu 后端托管，避免双头记忆冲突或频繁改写系统提示词击穿 Prompt KV 缓存。
 
 ---
 

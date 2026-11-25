@@ -51,6 +51,19 @@ grep -rnE "HTTPConnection|urlopen|subprocess|getFile|0\.0\.0\.0|shell=True" ./sh
 
 ---
 
+## ✨ Why Shinobu? (Key Strengths & Highlights)
+
+Most AI companions are either **static character cards trapped inside a single chat UI** (losing memory the moment you switch apps) or heavy stacks that stuff raw logs into prompts until latency and token costs explode. `shinobu-core` rethinks the personal companion from the microkernel up:
+
+1. **One Living Soul Across Every Surface (Not a Static Character Card)**: A single persistent brain and local SQLite memory vault simultaneously powers the built-in Web Memory Console (`shinobu ui`), transparent desktop pet (`shinobu pet`), mobile Telegram (`shinobu telegram`), and any external OpenAI `/v1` frontend — switching surfaces never resets memory, schedule, or voice state.
+2. **KV-Cache-Friendly Frozen L0 Prefix + Sleep Memory Consolidation**: The core soul prefix is SHA-256 frozen and built-in tools are tail-appended to maximize long-session Prompt KV-cache hit rates (lower latency and token spend); `shinobu sleep` and memory consolidation distill verbose episodes into compact structured facts & episodes in SQLite instead of bloating context windows.
+3. **One Zero-Dependency Codebase: 3-Minute Local Play ↔ 7×24 Hybrid Cloud**: Pure Python standard library (`dependencies = []`) runs standalone on a laptop in minutes, and scales seamlessly into `--engine hybrid` cloud hosting — routing tasks to your local PC edge node while awake and falling back to the cloud engine in seconds when your PC sleeps.
+4. **Native Bidirectional MCP Hub (Client + Server)**: Discover and non-destructively install curated zero-key community MCP presets via `shinobu mcp`, or expose Shinobu's own memory and reminder tools back to external AI IDEs and agents via `shinobu mcp-serve` (stdio) or remote `POST /mcp`.
+5. **Proactive Heartbeat, Natural-Language Reminders & Tri-Surface On-Demand TTS**: Schedule reminders conversationally (`schedule_reminder` / `list_reminders`) or via Telegram `/remind`, and trigger on-demand emotional voice playback (`POST /api/tts`) across Web, Desktop Pet, and Telegram with graceful degradation when no TTS backend is configured.
+6. **Fault-Isolated Microkernel & Built-In Self-Diagnostics**: External private packs attach via Python `entry_points` with strict per-plugin fault isolation (a broken extension never crashes the kernel), complemented by `shinobu doctor` for one-command driver, isolation, and redacted-secret health checks.
+
+---
+
 ## 🧭 Architecture: One Core, Local & Cloud Unified
 
 The exact same `shinobu-core` package powers both a 3-minute pure-local companion and a 7×24 cloud-hosted brain with local PC edge tentacles:
@@ -134,11 +147,18 @@ When you are ready for an always-on companion reachable from your phone and capa
 
 | Command | Mode | Description |
 |---|---|---|
-| `shinobu serve` | Local / Cloud | Start the `127.0.0.1` loopback HTTP/MCP daemon (supports `--engine hybrid`, etc.). |
-| `shinobu ui` | Local | Open the built-in Web Memory Console hosted by the running daemon. |
-| `shinobu pet` | Local (Optional) | Launch the floating desktop pet & chat drawer (requires `.[desktop]`). |
+| `shinobu init` | Setup | Initialize soul templates and the local SQLite memory store. |
+| `shinobu chat` | Local CLI | Chat directly with Shinobu in single-turn or interactive terminal mode. |
+| `shinobu sleep` | Consolidation | Distill, consolidate, and cleanly close the active conversation episode. |
+| `shinobu serve` | Local / Cloud | Start the `127.0.0.1` loopback HTTP/SSE/MCP daemon (supports `--engine hybrid`, etc.). |
+| `shinobu ui` | Local | Open the zero-dependency Web Memory Console hosted by the running daemon. |
+| `shinobu pet` | Local (Optional) | Launch the transparent floating desktop pet & chat drawer (requires `.[desktop]`). |
+| `shinobu compat` | External UIs | Print local OpenAI `/v1` compatible endpoint and event stream details (model ID: `shinobu`). |
+| `shinobu mcp` | MCP Client | Inspect, probe, and non-destructively install curated zero-key community MCP presets or bridge MCP servers. |
+| `shinobu mcp-serve` | MCP Server | Expose Shinobu as an outbound stdio MCP server for external AI clients and IDEs. |
 | `shinobu node` | Edge Tentacle | Register this PC over Tailscale/private network (`--cloud-url`, `--bind-host`, `--allowed-root`). |
 | `shinobu telegram` | Cloud / Local | Start the 4-lock isolated Telegram long-polling bridge. |
+| `shinobu status` / `doctor` | Diagnostics | Inspect home/plugins/daemon state or run driver, isolation, and redacted credential health checks. |
 
 ### Telegram Built-in Commands
 
@@ -154,10 +174,17 @@ When you are ready for an always-on companion reachable from your phone and capa
 
 | Interface | Purpose |
 |---|---|
+| `GET /v1/models` & `POST /v1/chat/completions` | OpenAI `/v1` compatible chat endpoint with strict loopback-origin CORS policy (default model `shinobu`). |
 | `POST /api/tts` | Synthesize speech (`{"text", "mood", "fmt": "ogg_opus"\|"mp3"\|"wav"}`); returns raw audio bytes or `503 {"error": "tts_unavailable"}`. |
 | `GET` / `POST /api/timemap` | Query and create scheduled reminders stored in SQLite `timemap`. |
 | `POST /mcp` | Remote Model Context Protocol (MCP) JSON-RPC endpoint (protected by bearer token over Tailscale). |
 | `build_memory_tools` (5 tools) | Memory read/write plus tail-appended `schedule_reminder` and `list_reminders` (zero L0 prefix mutation). |
+
+### 🔌 Connecting External Frontends (SillyTavern / Open WebUI / VTuber Shells)
+
+`shinobu-core` runs completely standalone with zero external frontend dependencies. If you still want to reuse the exact same soul and memory vault inside **SillyTavern**, Cherry Studio, Open WebUI, or local VTuber/pet shells (e.g. Project AIRI, Open-LLM-VTuber, VPetLLM), run `shinobu compat` and plug the loopback `/v1` base URL and bearer token into your client.
+
+> **Integration Tip**: Treat external clients as a **thin UI shell** — disable client-side **vector memory / auto-summary / dynamic lorebook injectors, status-bar macros, and client TTS plugins** so Shinobu remains the single source of truth for memory consolidation, TTS synthesis, and the frozen L0 KV-cache prefix (preventing split-brain memory conflicts or prompt cache busting).
 
 ---
 
