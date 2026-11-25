@@ -51,9 +51,14 @@ grep -rnE "HTTPConnection|urlopen|subprocess|getFile|0\.0\.0\.0|shell=True" ./sh
 
 ---
 
-## ✨ 为什么选择 Shinobu？（核心优势与特性）
+## ✨ 设计理念与核心优势：为什么它不只是一个“桌宠”？
 
-市面上大多数 AI 伴侣要么只是前端里的**静态人设卡**（换个软件就失忆），要么堆满沉重依赖、把聊天记录硬塞进上下文导致延迟飙升与费用失控。`shinobu-core` 从底层微内核重新设计了个人伴侣运行时：
+市面上大多数桌面宠物或 AI 聊天前端停留在**“只能闲聊卖萌的静态人设卡”**——既缺乏真实的工程干活能力，换一个窗口或软件又立刻失忆。`shinobu-core` 的核心设计理念恰恰相反：把 **「原生工作能力」** 与 **「跨窗口长期工作记忆」** 沉进零依赖微内核，让桌宠、Web 记忆本与手机 Telegram 只是同一个“活体工作伴侣大脑”的不同入口：
+
+- **原生工作能力（不止于闲聊）**：依托原生 Antigravity 驱动、双向 MCP 工具枢纽与受控白名单本机边端节点（`--allowed-root` + L0/L1/L2 分级审批护栏），它不仅能陪聊与提醒，更能真正调用工具、处理工作区任务，甚至在你离开电脑时通过手机远程审批并调度本机执行。
+- **跨窗口长期工作记忆（告别换窗失忆）**：长期项目上下文、技术偏好、关键事实与日程经睡眠记忆蒸馏沉淀在本地 SQLite 记忆库中——不仅在桌宠、Web 记忆本、Telegram 和外部 `/v1` 前端之间实时互通，更能通过 `shinobu mcp-serve` / `POST /mcp` 反向注入任意 AI IDE 或新开会话窗口，彻底终结“开新窗就从头介绍”的上下文割裂。
+
+具体工程特性一览：
 
 1. **原生非反代 Google Antigravity 官方驱动（`agy_cli` / `agy_sdk`）+ 多引擎自由切换**：绝不采用逆向反代、抓包伪造或窃取 Token 的高危灰产方案，直接基于官方 `agy` CLI（持久化 `stream-json` 常驻进程、`shinobu node` 默认引擎）与官方 `google-antigravity` Python SDK（懒加载可选 `.[agy-sdk]`，支持 `gemini` / `openai_local` / `litert` 模式）驱动；全部运行目录与会话映射物理隔离在 `$SHINOBU_HOME/runtime/`，绝不污染你的主 Antigravity 工作区，同时兼容任意标准 `openai_compat`（云端 API / 本地 Ollama / vLLM）与 `--engine hybrid` 混动路由。
 2. **多端共享同一个“活体灵魂”，彻底告别静态人设卡**：一个持久运行的后台大脑 + 本地 SQLite 记忆库，同时驱动内置 Web 记忆本（`shinobu ui`）、透明悬浮桌宠（`shinobu pet`）、手机 Telegram（`shinobu telegram`）以及任何外部 OpenAI `/v1` 前端——无论在哪一端聊天，记忆、提醒与语音状态实时同源。

@@ -51,9 +51,14 @@ grep -rnE "HTTPConnection|urlopen|subprocess|getFile|0\.0\.0\.0|shell=True" ./sh
 
 ---
 
-## ✨ Why Shinobu? (Key Strengths & Highlights)
+## ✨ Design Philosophy & Key Strengths: Why It's Not Just a "Desktop Pet"
 
-Most AI companions are either **static character cards trapped inside a single chat UI** (losing memory the moment you switch apps) or heavy stacks that stuff raw logs into prompts until latency and token costs explode. `shinobu-core` rethinks the personal companion from the microkernel up:
+Most desktop pets and chat wrappers stop at being **chat-only static character cards** — unable to do real engineering work and immediately losing context the moment you open a new window or switch apps. `shinobu-core` is built around the exact opposite philosophy: embedding **Native Work Capability** and **Cross-Session Long-Term Working Memory** into a zero-dependency microkernel, where the floating pet, Web Memory Console, and Telegram are simply different windows into one living working companion:
+
+- **Native Work Capability (Far Beyond Small Talk)**: Powered by native Antigravity drivers, a bidirectional MCP tool hub, and a hardened local edge node (`--allowed-root` + L0/L1/L2 tiered approvals), Shinobu doesn't just sit on your screen — it actively invokes tools, assists across your workspace, and lets you remotely approve local tasks from your phone.
+- **Cross-Session Long-Term Working Memory (Zero Context Reset Across Windows)**: Project context, preferences, distilled facts, and schedules persist in a local SQLite vault via sleep memory consolidation — shared seamlessly across Desktop Pet, Web Console, Telegram, and external `/v1` clients, and exposed back into any fresh AI IDE or agent session via `shinobu mcp-serve` / `POST /mcp`.
+
+Core engineering highlights:
 
 1. **Native Non-Proxy Google Antigravity Drivers (`agy_cli` & `agy_sdk`) + Multi-Engine Flexibility**: Strictly zero reverse-proxying, zero traffic spoofing, and zero credential scraping — connects directly through the official `agy` CLI (persistent `stream-json` worker, default engine for `shinobu node`) or the official `google-antigravity` Python SDK (lazy-loaded optional extra `.[agy-sdk]` supporting `gemini` / `openai_local` / `litert` modes). All runtime state and session maps stay isolated under `$SHINOBU_HOME/runtime/` without polluting your main Antigravity workspace, while remaining equally compatible with standard `openai_compat` endpoints (cloud APIs / Ollama / vLLM) and `--engine hybrid`.
 2. **One Living Soul Across Every Surface (Not a Static Character Card)**: A single persistent brain and local SQLite memory vault simultaneously powers the built-in Web Memory Console (`shinobu ui`), transparent desktop pet (`shinobu pet`), mobile Telegram (`shinobu telegram`), and any external OpenAI `/v1` frontend — switching surfaces never resets memory, schedule, or voice state.
