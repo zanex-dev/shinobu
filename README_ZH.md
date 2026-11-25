@@ -10,7 +10,7 @@
 
 <p align="center">
   <a href="pyproject.toml"><img src="https://img.shields.io/badge/version-v1.0.0-be123c" alt="Version v1.0.0" /></a>
-  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-e11d48.svg" alt="License: MIT" /></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-PolyForm%20Noncommercial%201.0.0-e11d48.svg" alt="License: PolyForm Noncommercial 1.0.0" /></a>
   <a href="pyproject.toml"><img src="https://img.shields.io/badge/python-3.10%2B%20(0%20deps)-3776AB.svg" alt="Python 3.10+ (0 deps)" /></a>
   <img src="https://img.shields.io/badge/network-127.0.0.1%20%2F%20Tailscale-059669" alt="Loopback and Tailscale" />
   <img src="https://img.shields.io/badge/telegram-4--Lock%20Isolated-0284c7" alt="Telegram 四重隔离锁" />
@@ -215,4 +215,5 @@ my_extension = "my_pkg.plugin:create_plugin"
 
 - 本项目为开源技术框架，仅用于个人 AI 运行时编排与本地/云端自动化实验。请使用者自行妥善保管 API 密钥、配置云端预算告警与防火墙策略，并遵守所用第三方平台的服务条款。
 - 严禁将任何真实密钥、Bearer Token、个人路径或私有 Tailscale 域名提交至公开仓库。
-- 本项目基于 [MIT 许可证](LICENSE) 发布 © 2026 zanex (zanex-dev)。
+- 本项目基于 [PolyForm Noncommercial License 1.0.0](LICENSE)（`PolyForm-Noncommercial-1.0.0`）发布 —— **个人学习、自用与非营利研究免费开放；严禁将本项目代码或 `assets/` 视觉头图及美术素材用于任何商业用途、付费服务、打包倒卖或二次售卖**，商业授权请联系作者 zanex-dev。
+- `Required Notice: Copyright (c) 2026 zanex (zanex-dev) (https://github.com/zanex-dev/shinobu)`

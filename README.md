@@ -10,7 +10,7 @@
 
 <p align="center">
   <a href="pyproject.toml"><img src="https://img.shields.io/badge/version-v1.0.0-be123c" alt="Version v1.0.0" /></a>
-  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-e11d48.svg" alt="License: MIT" /></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-PolyForm%20Noncommercial%201.0.0-e11d48.svg" alt="License: PolyForm Noncommercial 1.0.0" /></a>
   <a href="pyproject.toml"><img src="https://img.shields.io/badge/python-3.10%2B%20(0%20deps)-3776AB.svg" alt="Python 3.10+ (0 deps)" /></a>
   <img src="https://img.shields.io/badge/network-127.0.0.1%20%2F%20Tailscale-059669" alt="Loopback and Tailscale" />
   <img src="https://img.shields.io/badge/telegram-4--Lock%20Isolated-0284c7" alt="Telegram 4-Lock Isolated" />
@@ -215,4 +215,5 @@ my_extension = "my_pkg.plugin:create_plugin"
 
 - This project is an open-source technical framework for personal AI runtime orchestration and local/cloud automation. Users are solely responsible for configuring their own API credentials, cloud budgets, firewall rules, and compliance with third-party platform terms of service.
 - Never commit real API keys, bearer tokens, private Tailscale hostnames, or personal data into public forks.
-- Released under the [MIT License](LICENSE) © 2026 zanex (zanex-dev).
+- Licensed under the [PolyForm Noncommercial License 1.0.0](LICENSE) (`PolyForm-Noncommercial-1.0.0`) — **free for personal, educational, and noncommercial use; commercial use, paid SaaS, bundling, or resale of the code or `assets/` artwork is strictly prohibited** without prior written authorization from zanex-dev.
+- `Required Notice: Copyright (c) 2026 zanex (zanex-dev) (https://github.com/zanex-dev/shinobu)`
