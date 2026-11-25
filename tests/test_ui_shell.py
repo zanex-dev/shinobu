@@ -14,7 +14,10 @@ import sys
 import tempfile
 import threading
 import time
-import tomllib
+try:
+    import tomllib
+except ModuleNotFoundError:  # Python 3.10 stdlib fallback
+    tomllib = None  # type: ignore[assignment]
 from typing import Any, Iterator
 import unittest
 from unittest import mock
@@ -744,11 +747,16 @@ class TestLazyPySide6AndPackaging(unittest.TestCase):
 
     def test_pyproject_optional_desktop_extra_keeps_core_zero_dep(self) -> None:
         pyproject_path = Path(__file__).resolve().parents[1] / "pyproject.toml"
-        data = tomllib.loads(pyproject_path.read_text(encoding="utf-8"))
-        project = data["project"]
-        self.assertEqual(project["dependencies"], [])
-        desktop_deps = project["optional-dependencies"]["desktop"]
-        self.assertTrue(any(dep.startswith("PySide6") for dep in desktop_deps))
+        raw = pyproject_path.read_text(encoding="utf-8")
+        if tomllib is not None:
+            data = tomllib.loads(raw)
+            project = data["project"]
+            self.assertEqual(project["dependencies"], [])
+            desktop_deps = project["optional-dependencies"]["desktop"]
+            self.assertTrue(any(dep.startswith("PySide6") for dep in desktop_deps))
+        else:
+            self.assertIn("dependencies = []", raw)
+            self.assertIn('desktop = ["PySide6>=', raw)
 
 
 class TestPetCloudSyncAndControls(unittest.TestCase):

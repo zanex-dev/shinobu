@@ -116,8 +116,11 @@ def _escape_like(term: str) -> str:
 
 
 def _parse_iso_dt(value: str) -> datetime | None:
+    text = value.strip()
+    if text.endswith(("Z", "z")):
+        text = text[:-1] + "+00:00"
     try:
-        return datetime.fromisoformat(value)
+        return datetime.fromisoformat(text)
     except ValueError:
         return None
 

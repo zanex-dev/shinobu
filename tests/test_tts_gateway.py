@@ -6,7 +6,10 @@ import subprocess
 import sys
 import tempfile
 import threading
-import tomllib
+try:
+    import tomllib
+except ModuleNotFoundError:  # Python 3.10 stdlib fallback
+    tomllib = None  # type: ignore[assignment]
 import types
 import unittest
 import urllib.error
@@ -73,10 +76,15 @@ def _http_request(
 
 class TestTTSGatewayUnit(unittest.TestCase):
     def test_pyproject_optional_tts_edge_and_zero_core_deps(self) -> None:
-        data = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
-        self.assertEqual(data["project"]["dependencies"], [])
-        optional = data["project"]["optional-dependencies"]
-        self.assertEqual(optional.get("tts-edge"), ["edge-tts>=6.1"])
+        raw = (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+        if tomllib is not None:
+            data = tomllib.loads(raw)
+            self.assertEqual(data["project"]["dependencies"], [])
+            optional = data["project"]["optional-dependencies"]
+            self.assertEqual(optional.get("tts-edge"), ["edge-tts>=6.1"])
+        else:
+            self.assertIn("dependencies = []", raw)
+            self.assertIn('tts-edge = ["edge-tts>=6.1"]', raw)
 
     def test_text_voice_rate_and_url_helpers(self) -> None:
         cleaned = tts_gateway.clean_speech_text("Hello `world` [link](https://example.com) ```code``` **bold**")
