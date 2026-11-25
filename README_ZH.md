@@ -1,4 +1,6 @@
-<!-- 可选头图占位：放入 assets/banner.png 后按需启用 -->
+<p align="center">
+  <img src="assets/banner.svg" alt="SHINOBU（忍野忍）— 零依赖本地伴生微内核" width="100%" />
+</p>
 
 <h1 align="center">Shinobu（<code>shinobu-core</code>）</h1>
 

@@ -1,4 +1,6 @@
-<!-- Optional hero banner: place assets/banner.png to enable -->
+<p align="center">
+  <img src="assets/banner.svg" alt="SHINOBU (忍野忍) — Zero-Dependency Companion Microkernel" width="100%" />
+</p>
 
 <h1 align="center">Shinobu (<code>shinobu-core</code>)</h1>
 
