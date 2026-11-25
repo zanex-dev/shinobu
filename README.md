@@ -140,6 +140,30 @@ The pet chat drawer includes a **`🔊 朗读` (Speak)** button that synthesizes
 
 ---
 
+## 🎛️ Default Stack & Optional Ecosystem Menu
+
+`shinobu-core` stays **strictly zero-dependency (`dependencies = []`)**; every extra capability below is opt-in and non-mandatory:
+
+| Dimension | Default (Zero Dependencies) | Recommended Opt-In | Additional Options & Guides |
+|---|---|---|---|
+| **🧠 Brain Engine** | `mock` (works offline out of the box) | Local native `agy_cli` (`shinobu serve --engine agy_cli`, non-proxy) | `pip install -e ".[agy-sdk]"` (`agy_sdk`), standard `openai_compat`, or cloud/edge `hybrid` |
+| **🖥️ UI Shell & Avatars** | Built-in Web Memory Console (`shinobu ui`) | `.[desktop]` floating pet (`shinobu pet`) + `shinobu avatar` multi-expression avatar packs | High-end community shell **Project AIRI** (with launcher & walkthrough: [`deploy/airi_tts_guide.md`](deploy/airi_tts_guide.md)) |
+| **🔊 Voice TTS & Colab** | Silent by default (graceful notice, never blocks chat) | Daily free zero-key `pip install -e ".[tts-edge]"` + `shinobu tts-gateway` local OpenAI-compatible gateway | Colab GPU **IndexTTS-2.5** voice cloning ([`notebooks/README.md`](notebooks/README.md)) or cloud GCP Chirp 3: HD |
+| **🧩 Tools & Plugins** | 0 external processes, 0 extra packages | `shinobu mcp --presets` curated zero-key community MCP presets | External packages via Python `shinobu.plugins` entry points for isolated custom personas, sensors, or hooks |
+
+```bash
+# Optional Voice: install free Edge-TTS fallback and start local OpenAI-compatible TTS gateway (127.0.0.1:18791)
+pip install -e ".[tts-edge]"
+shinobu tts-gateway
+# Connect a Colab GPU upstream (routes to GPU first, falls back to Edge-TTS when offline):
+# shinobu tts-gateway --set-upstream https://<your-colab-tunnel-url>
+
+# Optional Avatars: import a custom multi-expression PNG/WebP avatar pack
+shinobu avatar --source ./my_avatars --name custom
+```
+
+---
+
 ## ☁️ Level 2: 7×24 Cloud Always-On Brain + Local Edge Node
 
 When you are ready for an always-on companion reachable from your phone and capable of securely reaching your local PC while it is awake:
@@ -165,6 +189,8 @@ When you are ready for an always-on companion reachable from your phone and capa
 | `shinobu serve` | Local / Cloud | Start the `127.0.0.1` loopback HTTP/SSE/MCP daemon (supports `--engine hybrid`, etc.). |
 | `shinobu ui` | Local | Open the zero-dependency Web Memory Console hosted by the running daemon. |
 | `shinobu pet` | Local (Optional) | Launch the transparent floating desktop pet & chat drawer (requires `.[desktop]`). |
+| `shinobu avatar` | Local (Optional) | Validate and import a custom multi-expression PNG/WebP avatar pack (`--source`, `--name`, `--force`). |
+| `shinobu tts-gateway` | Voice (Optional) | Start the local OpenAI-compatible `/v1/audio/speech` TTS gateway (Colab GPU upstream + `.[tts-edge]` fallback). |
 | `shinobu compat` | External UIs | Print local OpenAI `/v1` compatible endpoint and event stream details (model ID: `shinobu`). |
 | `shinobu mcp` | MCP Client | Inspect, probe, and non-destructively install curated zero-key community MCP presets or bridge MCP servers. |
 | `shinobu mcp-serve` | MCP Server | Expose Shinobu as an outbound stdio MCP server for external AI clients and IDEs. |
@@ -194,7 +220,7 @@ When you are ready for an always-on companion reachable from your phone and capa
 
 ### 🔌 Connecting External Frontends (SillyTavern / Open WebUI / VTuber Shells)
 
-`shinobu-core` runs completely standalone with zero external frontend dependencies. If you still want to reuse the exact same soul and memory vault inside **SillyTavern**, Cherry Studio, Open WebUI, or local VTuber/pet shells (e.g. Project AIRI, Open-LLM-VTuber, VPetLLM), run `shinobu compat` and plug the loopback `/v1` base URL and bearer token into your client.
+`shinobu-core` runs completely standalone with zero external frontend dependencies. If you still want to reuse the exact same soul and memory vault inside **SillyTavern**, Cherry Studio, Open WebUI, or local VTuber/pet shells (e.g. [Project AIRI](deploy/airi_tts_guide.md), Open-LLM-VTuber, VPetLLM), run `shinobu compat` and plug the loopback `/v1` base URL and bearer token into your client.
 
 > **Integration Tip**: Treat external clients as a **thin UI shell** — disable client-side **vector memory / auto-summary / dynamic lorebook injectors, status-bar macros, and client TTS plugins** so Shinobu remains the single source of truth for memory consolidation, TTS synthesis, and the frozen L0 KV-cache prefix (preventing split-brain memory conflicts or prompt cache busting).
 

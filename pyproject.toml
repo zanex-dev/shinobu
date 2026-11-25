@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "shinobu-core"
-version = "1.0.0"
+version = "1.1.0"
 description = "Zero-dependency microkernel, protocol contracts, and fault-isolated plugin foundation for Shinobu."
 license = { text = "PolyForm-Noncommercial-1.0.0" }
 requires-python = ">=3.10"
@@ -32,6 +32,7 @@ dependencies = []
 [project.optional-dependencies]
 agy-sdk = ["google-antigravity"]
 desktop = ["PySide6>=6.6"]
+tts-edge = ["edge-tts>=6.1"]
 
 [project.scripts]
 shinobu = "shinobu_core.server.cli:main"

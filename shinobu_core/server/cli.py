@@ -2774,10 +2774,105 @@ def build_parser(kernel: ShinobuKernel | None = None) -> argparse.ArgumentParser
     p_doctor.add_argument("--json", action="store_true", help="Emit machine-readable JSON output.")
     p_doctor.set_defaults(func=_cmd_doctor)
 
+    # tts-gateway
+    p_tts_gw = subparsers.add_parser(
+        "tts-gateway",
+        help="Run or configure the optional local OpenAI-compatible dual-mode TTS gateway.",
+    )
+    from shinobu_core.cloud.tts_gateway import register_tts_gateway_arguments
+
+    register_tts_gateway_arguments(p_tts_gw)
+    p_tts_gw.set_defaults(func=_cmd_tts_gateway)
+
+    # avatar
+    p_avatar = subparsers.add_parser(
+        "avatar",
+        help="Scan local differential avatar sprites, generate manifest.json, and activate a pack.",
+    )
+    p_avatar.add_argument(
+        "--source",
+        default=None,
+        help="Local directory containing state/mood sprite files (.svg/.png/.webp/.gif).",
+    )
+    p_avatar.add_argument(
+        "--name",
+        default="custom",
+        help="Avatar pack name under <home>/avatars/<name>/ (default: custom).",
+    )
+    p_avatar.add_argument(
+        "--force",
+        action="store_true",
+        help="Overwrite differing target sprites after backing up originals under <home>/_versions/.",
+    )
+    p_avatar.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit machine-readable JSON output.",
+    )
+    p_avatar.set_defaults(func=_cmd_avatar)
+
     if kernel is not None:
         kernel.apply_cli(subparsers)
 
     return parser
+
+
+def _cmd_tts_gateway(args: argparse.Namespace, kernel: ShinobuKernel) -> int:
+    from shinobu_core.cloud.tts_gateway import run_tts_gateway_cli
+
+    return run_tts_gateway_cli(args, home=kernel.home)
+
+
+def _cmd_avatar(args: argparse.Namespace, kernel: ShinobuKernel) -> int:
+    import json
+    import sys
+
+    from shinobu_core.ui.avatar_installer import DEFAULT_AVATAR_PACK_NAME, apply_avatar_pack
+
+    pack_name = getattr(args, "name", None) or DEFAULT_AVATAR_PACK_NAME
+    try:
+        result = apply_avatar_pack(
+            source=getattr(args, "source", None),
+            name=pack_name,
+            home=kernel.home,
+            force=bool(getattr(args, "force", False)),
+        )
+    except (FileNotFoundError, ValueError) as exc:
+        if getattr(args, "json", False):
+            print(json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False, indent=2))
+        else:
+            print(f"error: {exc}", file=sys.stderr)
+        return 1
+
+    if getattr(args, "json", False):
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return 0
+
+    states = result.get("states", {})
+    missing = result.get("missing_states", [])
+    copied = result.get("copied", [])
+    unchanged = result.get("unchanged", [])
+    protected = result.get("protected", [])
+    backed_up = result.get("backed_up", [])
+    ignored = result.get("ignored_files", [])
+
+    print(f"Avatar pack '{result['pack_name']}' -> {result['pack_dir']}")
+    print(f"Manifest: {result['manifest_path']} ({len(states)} state sprites mapped)")
+    if result.get("activated"):
+        print(f"Activated: {result['active_path']}")
+    else:
+        print("Activated: False (no valid sprites found; pass --force to activate empty pack)")
+    print(
+        f"Summary: copied={len(copied)}, unchanged={len(unchanged)}, "
+        f"protected={len(protected)}, backed_up={len(backed_up)}, ignored={len(ignored)}"
+    )
+    if missing:
+        print(f"Missing core states ({len(missing)}): {', '.join(missing)}")
+    if backed_up:
+        print("Backups:")
+        for item in backed_up:
+            print(f"  - {item}")
+    return 0
 
 
 def _invoke_handler(handler: Any, args: argparse.Namespace, kernel: ShinobuKernel) -> int:

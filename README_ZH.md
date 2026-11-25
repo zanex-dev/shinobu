@@ -140,6 +140,30 @@ shinobu pet
 
 ---
 
+## 🎛️ 默认推荐与可选自选清单
+
+`shinobu-core` 保持 **核心零第三方依赖（`dependencies = []`）**；除默认开箱底座外，所有扩展能力均按需自选、互不绑架：
+
+| 维度 | 默认（零依赖开箱） | 推荐自选 | 更多自选与指引 |
+|---|---|---|---|
+| **🧠 大脑引擎** | `mock`（离线即开即用） | 本地原生 `agy_cli`（`shinobu serve --engine agy_cli`，零反代） | `pip install -e ".[agy-sdk]"`（`agy_sdk`）、标准 `openai_compat`、云边混动 `hybrid` |
+| **🖥️ 外壳躯体与立绘** | 内置 Web 记忆本（`shinobu ui`） | `.[desktop]` 透明悬浮桌宠（`shinobu pet`）+ `shinobu avatar` 自定义多情绪差分立绘 | 推荐高配社区 2D/3D 壳 **Project AIRI**（含一键联调脚本：[`deploy/airi_tts_guide.md`](deploy/airi_tts_guide.md)） |
+| **🔊 语音 TTS 与 Colab** | 静默零打扰（未配置优雅提示，不阻断文字） | 日常免费零 Key：`pip install -e ".[tts-edge]"` + `shinobu tts-gateway` 本地 OpenAI 兼容网关 | 自选免本机显存的 Colab GPU 克隆语音 **IndexTTS-2.5**（[`notebooks/README.md`](notebooks/README.md)）或云端 GCP Chirp 3: HD |
+| **🧩 工具与扩展插件** | 0 外部进程、0 外部依赖 | `shinobu mcp --presets` 无损安装零 Key 社区 MCP 预设 | 通过标准 Python `shinobu.plugins` entry points 物理隔离扩展自定义人设、传感器或私有钩子 |
+
+```bash
+# 可选语音：安装免费 Edge-TTS 回落并启动本地 OpenAI 兼容网关（127.0.0.1:18791）
+pip install -e ".[tts-edge]"
+shinobu tts-gateway
+# 接入 Colab GPU 上游（自动优先转发 GPU，离线时无缝回落 Edge-TTS）：
+# shinobu tts-gateway --set-upstream https://<your-colab-tunnel-url>
+
+# 可选立绘：一键导入自定义 PNG/WebP 多情绪差分立绘包
+shinobu avatar --source ./my_avatars --name custom
+```
+
+---
+
 ## ☁️ 进阶形态 —— Level 2：7×24 云端中枢 + 本机边端触手
 
 当你希望手机随时能联系到常驻大脑，同时在电脑开机时自动借力本机算力与本地工作区：
@@ -165,6 +189,8 @@ shinobu pet
 | `shinobu serve` | 本地 / 云端 | 启动 `127.0.0.1` 回环 HTTP/SSE/MCP 守护进程（支持 `--engine hybrid` 等）。 |
 | `shinobu ui` | 本地 | 打开由守护进程托管的零依赖内置 Web 记忆本页面。 |
 | `shinobu pet` | 本地（可选） | 启动透明桌面悬浮桌宠与聊天抽屉（需先安装 `.[desktop]`）。 |
+| `shinobu avatar` | 本地（可选） | 校验并导入自定义多情绪 PNG/WebP 差分立绘包（`--source`、`--name`、`--force`）。 |
+| `shinobu tts-gateway` | 本地语音（可选） | 启动本地 OpenAI 兼容 `/v1/audio/speech` 语音网关，支持 Colab GPU 上游转发与 `.[tts-edge]` 免费回落。 |
 | `shinobu compat` | 第三方前端 | 打印本机 OpenAI `/v1` 兼容端点与事件流连接信息（默认模型 ID：`shinobu`）。 |
 | `shinobu mcp` | 工具生态 | 查看、探测、无损安装精选零 Key 社区 MCP 预设或管理 MCP 桥接。 |
 | `shinobu mcp-serve` | 反向 MCP | 通过 `stdio` 将 Shinobu 暴露为标准 MCP 服务端，供外部 AI 客户端调用。 |
@@ -194,7 +220,7 @@ shinobu pet
 
 ### 🔌 接入第三方前端（SillyTavern / Open WebUI / VTuber 壳）
 
-`shinobu-core` 默认完全独立运行，不依赖任何第三方前端；如果你仍希望在 **SillyTavern（傻酒馆）**、Cherry Studio、Open WebUI 或本机 VTuber/桌宠壳（如 Project AIRI、Open-LLM-VTuber、VPetLLM）中直接复用同一套灵魂与记忆，运行 `shinobu compat` 获取本机 `/v1` 地址与 Bearer Token 填入客户端即可无缝迁入。
+`shinobu-core` 默认完全独立运行，不依赖任何第三方前端；如果你仍希望在 **SillyTavern（傻酒馆）**、Cherry Studio、Open WebUI 或本机 VTuber/桌宠壳（如 [Project AIRI](deploy/airi_tts_guide.md)、Open-LLM-VTuber、VPetLLM）中直接复用同一套灵魂与记忆，运行 `shinobu compat` 获取本机 `/v1` 地址与 Bearer Token 填入客户端即可无缝迁入。
 
 > **对接避坑提示**：接入第三方客户端时，请将其视为**纯粹的对话皮肤**——建议关闭前端侧的**向量记忆 / 自动摘要 / 动态世界书注入、前端状态栏宏以及客户端内置 TTS 插件**，将记忆蒸馏、语音合成与护 KV L0 前缀冻结全权交由 Shinobu 后端托管，避免双头记忆冲突或频繁改写系统提示词击穿 Prompt KV 缓存。
 

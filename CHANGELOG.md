@@ -6,6 +6,24 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ---
 
+## [1.1.0] - 2026-11-25
+
+Preserves the strict zero-dependency core (`dependencies = []`) while adding an opt-in local TTS gateway, Colab GPU voice notebooks, Project AIRI integration kit, custom avatar pack installer, and cross-platform zero-dependency CI.
+
+### Added
+- **Optional Local OpenAI-Compatible TTS Gateway (`.[tts-edge]` / `shinobu tts-gateway`)**:
+  - Added `shinobu_core/cloud/tts_gateway.py` and optional extra `tts-edge = ["edge-tts>=6.1"]` (lazily imported only during local fallback synthesis so core imports and remote GPU forwarding work with zero extras installed).
+  - Added `shinobu tts-gateway` CLI command (`--host`/`--port`/`--voice`/`--upstream-config`/`--set-upstream`/`--upstream-key`/`--clear-upstream`/`--show-upstream`/`--json`) exposing `/v1/audio/speech`, `/v1/models`, and `/health`, with GPU-upstream-first routing, automatic Edge-TTS fallback, and `validate_bind_host` loopback enforcement.
+- **Colab GPU Voice Notebooks & Project AIRI Integration Kit**:
+  - Added sanitized notebooks `notebooks/shinobu_colab_tts_worker_v2.ipynb` (cloud worker mode), `notebooks/shinobu_colab_tts_local_l4.ipynb` (local L4/T4 direct mode), and `notebooks/README.md` with cleared cell outputs and zero personal paths.
+  - Added `deploy/airi_tts_guide.md` and environment-parameterized launcher `deploy/launch_local_airi_tts.ps1` to connect `shinobu tts-gateway` with Project AIRI and other OpenAI-TTS-compatible frontends.
+- **Generic Avatar Pack Installer (`shinobu avatar`) & Cross-Platform Zero-Dep CI**:
+  - Added `shinobu_core/ui/avatar_installer.py` and `shinobu avatar [--source DIR] [--name custom] [--force] [--json]` to validate and install user-supplied multi-expression PNG/WebP avatar packs without bundling binary artwork in the repo.
+  - Added `.github/workflows/ci.yml` running the full unit test and gate suite across Linux / Windows / macOS × Python 3.10 / 3.11 / 3.12 with zero third-party dependencies (`SHINOBU_DISABLE_PLUGINS=1`).
+- **Bilingual Optional Ecosystem Menu**: Updated `README.md` and `README_ZH.md` with the 4-dimension "Default (Zero-Dep) vs. Recommended Opt-In" matrix, new CLI quick-reference entries, and Colab / AIRI documentation links.
+
+---
+
 ## [1.0.0] - 2026-11-25
 
 First stable open-source release of `shinobu-core`: one zero-dependency Python microkernel powering both pure-local play and 7×24 privacy-isolated cloud always-on hosting.

@@ -6,6 +6,24 @@
 
 ---
 
+## [1.1.0] - 2026-11-25
+
+在严守核心零第三方依赖（`dependencies = []`）的前提下，补齐语音网关、Colab GPU 语音工坊、社区前端联调、自定义差分立绘安装器与跨平台零依赖 CI。
+
+### 新增功能
+- **可选本地 OpenAI 兼容 TTS 网关（`.[tts-edge]` / `shinobu tts-gateway`）**：
+  - 新增 `shinobu_core/cloud/tts_gateway.py` 与可选依赖 `tts-edge = ["edge-tts>=6.1"]`（仅在本地回落合成时懒加载，未安装不影响核心导入或 GPU 上游转发）。
+  - 注册 `shinobu tts-gateway` CLI 子命令（`--host`/`--port`/`--voice`/`--upstream-config`/`--set-upstream`/`--upstream-key`/`--clear-upstream`/`--show-upstream`/`--json`），提供 `/v1/audio/speech`、`/v1/models`、`/health`，支持远程 Colab GPU 优先转发与本地免费 Edge-TTS 自动回落，并经 `validate_bind_host` 校验回环绑定。
+- **Colab GPU 语音工坊与 Project AIRI 联调套件**：
+  - 新增 `notebooks/shinobu_colab_tts_worker_v2.ipynb`（云端回传模式）、`notebooks/shinobu_colab_tts_local_l4.ipynb`（本机 L4/T4 直连模式）与 `notebooks/README.md`（均清空代码单元输出、零个人路径）。
+  - 新增 `deploy/airi_tts_guide.md` 与全环境变量参数化启动脚本 `deploy/launch_local_airi_tts.ps1`，支持一键将本地 `shinobu tts-gateway` 接入 Project AIRI 等兼容 OpenAI TTS 协议的前端壳。
+- **通用差分立绘包安装器（`shinobu avatar`）与跨平台零依赖 CI**：
+  - 新增 `shinobu_core/ui/avatar_installer.py` 与 `shinobu avatar [--source DIR] [--name custom] [--force] [--json]`，支持校验并一键导入自定义多情绪 PNG/WebP 差分立绘包（仓库不含任何二进制立绘素材）。
+  - 新增 `.github/workflows/ci.yml`，在 Linux / Windows / macOS × Python 3.10 / 3.11 / 3.12 矩阵上以零第三方依赖（`SHINOBU_DISABLE_PLUGINS=1`）运行全量单测与门禁校验。
+- **双语自选清单文档**：在 `README.md` 与 `README_ZH.md` 补充「默认零依赖 vs 推荐自选」四维矩阵表、新增 CLI 速查项与 Colab / AIRI 指引链接。
+
+---
+
 ## [1.0.0] - 2026-11-25
 
 `shinobu-core` 首个正式开源稳定版：零第三方依赖的同源微内核底座，兼顾纯本地 3 分钟体验与 7×24 隐私隔离云端常驻。
