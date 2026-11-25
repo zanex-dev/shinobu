@@ -55,12 +55,13 @@ grep -rnE "HTTPConnection|urlopen|subprocess|getFile|0\.0\.0\.0|shell=True" ./sh
 
 Most AI companions are either **static character cards trapped inside a single chat UI** (losing memory the moment you switch apps) or heavy stacks that stuff raw logs into prompts until latency and token costs explode. `shinobu-core` rethinks the personal companion from the microkernel up:
 
-1. **One Living Soul Across Every Surface (Not a Static Character Card)**: A single persistent brain and local SQLite memory vault simultaneously powers the built-in Web Memory Console (`shinobu ui`), transparent desktop pet (`shinobu pet`), mobile Telegram (`shinobu telegram`), and any external OpenAI `/v1` frontend — switching surfaces never resets memory, schedule, or voice state.
-2. **KV-Cache-Friendly Frozen L0 Prefix + Sleep Memory Consolidation**: The core soul prefix is SHA-256 frozen and built-in tools are tail-appended to maximize long-session Prompt KV-cache hit rates (lower latency and token spend); `shinobu sleep` and memory consolidation distill verbose episodes into compact structured facts & episodes in SQLite instead of bloating context windows.
-3. **One Zero-Dependency Codebase: 3-Minute Local Play ↔ 7×24 Hybrid Cloud**: Pure Python standard library (`dependencies = []`) runs standalone on a laptop in minutes, and scales seamlessly into `--engine hybrid` cloud hosting — routing tasks to your local PC edge node while awake and falling back to the cloud engine in seconds when your PC sleeps.
-4. **Native Bidirectional MCP Hub (Client + Server)**: Discover and non-destructively install curated zero-key community MCP presets via `shinobu mcp`, or expose Shinobu's own memory and reminder tools back to external AI IDEs and agents via `shinobu mcp-serve` (stdio) or remote `POST /mcp`.
-5. **Proactive Heartbeat, Natural-Language Reminders & Tri-Surface On-Demand TTS**: Schedule reminders conversationally (`schedule_reminder` / `list_reminders`) or via Telegram `/remind`, and trigger on-demand emotional voice playback (`POST /api/tts`) across Web, Desktop Pet, and Telegram with graceful degradation when no TTS backend is configured.
-6. **Fault-Isolated Microkernel & Built-In Self-Diagnostics**: External private packs attach via Python `entry_points` with strict per-plugin fault isolation (a broken extension never crashes the kernel), complemented by `shinobu doctor` for one-command driver, isolation, and redacted-secret health checks.
+1. **Native Non-Proxy Google Antigravity Drivers (`agy_cli` & `agy_sdk`) + Multi-Engine Flexibility**: Strictly zero reverse-proxying, zero traffic spoofing, and zero credential scraping — connects directly through the official `agy` CLI (persistent `stream-json` worker, default engine for `shinobu node`) or the official `google-antigravity` Python SDK (lazy-loaded optional extra `.[agy-sdk]` supporting `gemini` / `openai_local` / `litert` modes). All runtime state and session maps stay isolated under `$SHINOBU_HOME/runtime/` without polluting your main Antigravity workspace, while remaining equally compatible with standard `openai_compat` endpoints (cloud APIs / Ollama / vLLM) and `--engine hybrid`.
+2. **One Living Soul Across Every Surface (Not a Static Character Card)**: A single persistent brain and local SQLite memory vault simultaneously powers the built-in Web Memory Console (`shinobu ui`), transparent desktop pet (`shinobu pet`), mobile Telegram (`shinobu telegram`), and any external OpenAI `/v1` frontend — switching surfaces never resets memory, schedule, or voice state.
+3. **KV-Cache-Friendly Frozen L0 Prefix + Sleep Memory Consolidation**: The core soul prefix is SHA-256 frozen and built-in tools are tail-appended to maximize long-session Prompt KV-cache hit rates (lower latency and token spend); `shinobu sleep` and memory consolidation distill verbose episodes into compact structured facts & episodes in SQLite instead of bloating context windows.
+4. **One Zero-Dependency Codebase: 3-Minute Local Play ↔ 7×24 Hybrid Cloud**: Pure Python standard library (`dependencies = []`) runs standalone on a laptop in minutes, and scales seamlessly into `--engine hybrid` cloud hosting — routing tasks to your local PC's native `agy_cli` edge node while awake and falling back to the cloud engine in seconds when your PC sleeps.
+5. **Native Bidirectional MCP Hub (Client + Server)**: Discover and non-destructively install curated zero-key community MCP presets via `shinobu mcp` (including safe `agy` bridging), or expose Shinobu's own memory and reminder tools back to external AI IDEs and agents via `shinobu mcp-serve` (stdio) or remote `POST /mcp`.
+6. **Proactive Heartbeat, Natural-Language Reminders & Tri-Surface On-Demand TTS**: Schedule reminders conversationally (`schedule_reminder` / `list_reminders`) or via Telegram `/remind`, and trigger on-demand emotional voice playback (`POST /api/tts`) across Web, Desktop Pet, and Telegram with graceful degradation when no TTS backend is configured.
+7. **Fault-Isolated Microkernel & Built-In Self-Diagnostics**: External private packs attach via Python `entry_points` with strict per-plugin fault isolation (a broken extension never crashes the kernel), complemented by `shinobu doctor` for one-command native `agy_sdk`/`agy_cli` driver, isolation directory, and redacted-secret health checks.
 
 ---
 
@@ -106,8 +107,14 @@ pip install -e .
 ### 2. Start the Local Loopback Daemon & Web Memory Console
 
 ```bash
+# Optional: diagnose native Antigravity drivers (agy_cli / agy_sdk) and isolation dirs
+shinobu doctor
+
 # Terminal 1 — start the local daemon on 127.0.0.1:18790
-shinobu serve
+# Runs offline with default mock; switch to native non-proxy Antigravity or standard OpenAI APIs anytime:
+shinobu serve --engine agy_cli        # Official Antigravity CLI (non-proxy, isolated workspace)
+# or: pip install -e ".[agy-sdk]" && shinobu serve --engine agy_sdk
+# or: shinobu serve --engine openai_compat
 
 # Terminal 2 — open the built-in Web Memory Console
 shinobu ui

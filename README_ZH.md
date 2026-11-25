@@ -55,12 +55,13 @@ grep -rnE "HTTPConnection|urlopen|subprocess|getFile|0\.0\.0\.0|shell=True" ./sh
 
 市面上大多数 AI 伴侣要么只是前端里的**静态人设卡**（换个软件就失忆），要么堆满沉重依赖、把聊天记录硬塞进上下文导致延迟飙升与费用失控。`shinobu-core` 从底层微内核重新设计了个人伴侣运行时：
 
-1. **多端共享同一个“活体灵魂”，彻底告别静态人设卡**：一个持久运行的后台大脑 + 本地 SQLite 记忆库，同时驱动内置 Web 记忆本（`shinobu ui`）、透明悬浮桌宠（`shinobu pet`）、手机 Telegram（`shinobu telegram`）以及任何外部 OpenAI `/v1` 前端——无论在哪一端聊天，记忆、提醒与语音状态实时同源。
-2. **护 KV 缓存 L0 灵魂冻结 + 睡眠记忆蒸馏**：核心灵魂前缀经 SHA-256 冻结锁定，内置工具采用尾插式注册，最大程度守护长会话 Prompt KV 缓存命中率（降延迟、省 Token）；配合 `shinobu sleep` 与记忆蒸馏机制，把冗长对话提纯沉淀为结构化事实与剧集，避免无休止堆叠原始聊天记录。
-3. **一份零依赖同源底座，本地即玩 ↔ 云端 7×24 混动无缝升级**：核心 `dependencies = []` 纯 Python 标准库实现；纯本机 3 分钟即可跑全套，上云后开启 `--engine hybrid` 混动路由——个人电脑开机时自动借力本机算力与边端触手，关机或休眠时秒级切回云端大脑不掉线。
-4. **原生双向 MCP 枢纽（既是客户端，也是服务端）**：既可通过 `shinobu mcp` 一键探测并无损安装零 Key 社区精选 MCP 工具集，也可通过 `shinobu mcp-serve`（stdio）或云端 `POST /mcp` 将 Shinobu 的记忆与提醒反向暴露给外部 AI IDE / Agent 协作调用。
-5. **主动心跳、自然语言定提醒与三端按需情感语音**：支持聊天中随口定时提醒（`schedule_reminder` / `list_reminders`）与 Telegram `/remind`；Web 记忆本、桌宠抽屉与 Telegram 语音条三端原生打通 `POST /api/tts` 按需语音合成，未配语音后端时优雅提示、零打扰。
-6. **插件故障隔离与开箱自检**：外部私有扩展通过标准 `entry_points` 挂载，任何单个插件异常均被微内核隔离，绝不拖垮主进程；内置 `shinobu doctor` 一键诊断驱动、隔离边界与插件健康并自动脱敏密钥。
+1. **原生非反代 Google Antigravity 官方驱动（`agy_cli` / `agy_sdk`）+ 多引擎自由切换**：绝不采用逆向反代、抓包伪造或窃取 Token 的高危灰产方案，直接基于官方 `agy` CLI（持久化 `stream-json` 常驻进程、`shinobu node` 默认引擎）与官方 `google-antigravity` Python SDK（懒加载可选 `.[agy-sdk]`，支持 `gemini` / `openai_local` / `litert` 模式）驱动；全部运行目录与会话映射物理隔离在 `$SHINOBU_HOME/runtime/`，绝不污染你的主 Antigravity 工作区，同时兼容任意标准 `openai_compat`（云端 API / 本地 Ollama / vLLM）与 `--engine hybrid` 混动路由。
+2. **多端共享同一个“活体灵魂”，彻底告别静态人设卡**：一个持久运行的后台大脑 + 本地 SQLite 记忆库，同时驱动内置 Web 记忆本（`shinobu ui`）、透明悬浮桌宠（`shinobu pet`）、手机 Telegram（`shinobu telegram`）以及任何外部 OpenAI `/v1` 前端——无论在哪一端聊天，记忆、提醒与语音状态实时同源。
+3. **护 KV 缓存 L0 灵魂冻结 + 睡眠记忆蒸馏**：核心灵魂前缀经 SHA-256 冻结锁定，内置工具采用尾插式注册，最大程度守护长会话 Prompt KV 缓存命中率（降延迟、省 Token）；配合 `shinobu sleep` 与记忆蒸馏机制，把冗长对话提纯沉淀为结构化事实与剧集，避免无休止堆叠原始聊天记录。
+4. **一份零依赖同源底座，本地即玩 ↔ 云端 7×24 混动无缝升级**：核心 `dependencies = []` 纯 Python 标准库实现；纯本机 3 分钟即可跑全套，上云后开启 `--engine hybrid` 混动路由——个人电脑开机时自动借力本机原生 `agy_cli` 算力与边端触手，关机或休眠时秒级切回云端大脑不掉线。
+5. **原生双向 MCP 枢纽（既是客户端，也是服务端）**：既可通过 `shinobu mcp` 一键探测并无损安装零 Key 社区精选 MCP 工具集（支持与 `agy` 桥接），也可通过 `shinobu mcp-serve`（stdio）或云端 `POST /mcp` 将 Shinobu 的记忆与提醒反向暴露给外部 AI IDE / Agent 协作调用。
+6. **主动心跳、自然语言定提醒与三端按需情感语音**：支持聊天中随口定时提醒（`schedule_reminder` / `list_reminders`）与 Telegram `/remind`；Web 记忆本、桌宠抽屉与 Telegram 语音条三端原生打通 `POST /api/tts` 按需语音合成，未配语音后端时优雅提示、零打扰。
+7. **插件故障隔离与开箱自检**：外部私有扩展通过标准 `entry_points` 挂载，任何单个插件异常均被微内核隔离，绝不拖垮主进程；内置 `shinobu doctor` 一键诊断原生 `agy_sdk`/`agy_cli` 驱动、隔离目录与插件健康并自动脱敏密钥。
 
 ---
 
@@ -106,8 +107,14 @@ pip install -e .
 ### 2. 启动回环守护进程与 Web 记忆本
 
 ```bash
+# 可选：一键检查本机原生 Antigravity 驱动（agy_cli / agy_sdk）与隔离目录
+shinobu doctor
+
 # 终端 1 — 在 127.0.0.1:18790 启动本地守护进程
-shinobu serve
+# 默认 mock 即可离线体验；接入真实大脑可直接指定原生非反代驱动或标准 OpenAI 兼容接口：
+shinobu serve --engine agy_cli        # 官方 Antigravity CLI（零反代、独立沙盒工作区）
+# 或: pip install -e ".[agy-sdk]" && shinobu serve --engine agy_sdk
+# 或: shinobu serve --engine openai_compat
 
 # 终端 2 — 打开内置 Web 记忆本控制台
 shinobu ui
