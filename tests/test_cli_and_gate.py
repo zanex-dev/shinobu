@@ -1534,7 +1534,13 @@ class TestCliAndDualGate(unittest.TestCase):
                     from unittest import mock as _mock
                     from shinobu_core.server.cli import build_daemon as _build_daemon, main as _cli_main
 
-                    with _mock.patch.dict(os.environ, {"SHINOBU_TOKEN": "env-remote-tok"}, clear=False):
+                    with (
+                        _mock.patch.dict(os.environ, {"SHINOBU_TOKEN": "env-remote-tok"}, clear=False),
+                        _mock.patch(
+                            "shinobu_core.mcp.community._resolve_agy_binary",
+                            return_value="/usr/local/bin/agy",
+                        ),
+                    ):
                         buf_env = _io.StringIO()
                         with _ctxlib.redirect_stdout(buf_env):
                             rc_env = _cli_main(
