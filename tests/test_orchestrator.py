@@ -826,5 +826,491 @@ class TestHeartbeatDailyBriefing(unittest.TestCase):
         self.assertIn("2026-11-23", def_briefings[0].payload["text"])
 
 
+class TestHeartbeatAutoArchive(unittest.TestCase):
+    def test_auto_archive_disabled_by_default_zero_token(self) -> None:
+        import time
+        from shinobu_core.runtime.heartbeat import HeartbeatLoop
+        from shinobu_core.runtime.state_machine import PetStateMachine
+
+        sm = PetStateMachine()
+        calls = {"count": 0}
+        hb = HeartbeatLoop(
+            store=None,
+            state_machine=sm,
+            on_auto_archive=lambda: calls.__setitem__("count", calls["count"] + 1),
+        )
+        self.assertEqual(hb.auto_archive_after_sec, 0.0)
+        time.sleep(0.05)
+        hb.tick_once()
+        self.assertEqual(calls["count"], 0)
+
+    def test_auto_archive_triggers_independently_and_resets_after_activity(self) -> None:
+        import time
+        from shinobu_core.runtime.heartbeat import HeartbeatLoop
+        from shinobu_core.runtime.state_machine import PetStateMachine
+
+        sm = PetStateMachine()
+        archive_calls = {"count": 0}
+        sleep_calls = {"count": 0}
+        hb = HeartbeatLoop(
+            store=None,
+            state_machine=sm,
+            donut_after_sec=10.0,
+            sleepy_after_sec=20.0,
+            auto_archive_after_sec=0.05,
+            on_auto_archive=lambda: archive_calls.__setitem__(
+                "count", archive_calls["count"] + 1
+            ),
+            auto_sleep_after_sec=0.14,
+            on_auto_sleep=lambda: sleep_calls.__setitem__(
+                "count", sleep_calls["count"] + 1
+            ),
+        )
+
+        hb.tick_once()
+        self.assertEqual(archive_calls["count"], 0)
+        self.assertEqual(sleep_calls["count"], 0)
+
+        # Cross archive threshold first (sleep threshold not reached yet)
+        time.sleep(0.07)
+        hb.tick_once()
+        hb.tick_once()
+        self.assertEqual(archive_calls["count"], 1)
+        self.assertEqual(sleep_calls["count"], 0)
+
+        # Cross sleep threshold too: sleep fires once, archive does not double-fire
+        time.sleep(0.09)
+        hb.tick_once()
+        hb.tick_once()
+        self.assertEqual(archive_calls["count"], 1)
+        self.assertEqual(sleep_calls["count"], 1)
+
+        # Activity resets both debounce flags
+        sm.transition("idle", reason="user_chat", touch_activity=True)
+        hb.tick_once()
+        time.sleep(0.07)
+        hb.tick_once()
+        self.assertEqual(archive_calls["count"], 2)
+        self.assertEqual(sleep_calls["count"], 1)
+
+    def test_auto_archive_fault_isolated(self) -> None:
+        import time
+        from shinobu_core.runtime.heartbeat import HeartbeatLoop
+        from shinobu_core.runtime.state_machine import PetStateMachine
+
+        sm = PetStateMachine()
+        calls = {"count": 0}
+
+        def _boom() -> None:
+            calls["count"] += 1
+            raise RuntimeError("auto archive failure")
+
+        hb = HeartbeatLoop(
+            store=None,
+            state_machine=sm,
+            auto_archive_after_sec=0.04,
+            on_auto_archive=_boom,
+        )
+        time.sleep(0.06)
+        hb.tick_once()
+        hb.tick_once()
+        self.assertEqual(calls["count"], 1)
+
+
+class TestEpisodeReasoningRatchetAndIdleArchive(unittest.TestCase):
+    def setUp(self) -> None:
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self.home = Path(self._tmpdir.name) / "shinobu_home"
+        self.store = MemoryStore(self.home / "memory.db")
+        self.kernel = ShinobuKernel()
+
+    def tearDown(self) -> None:
+        self.store.close()
+        self._tmpdir.cleanup()
+
+    def _make_recording_engine(self, *, emit_tool_on_first_round: bool = False):
+        from shinobu_core.protocol.engine import TurnChunk, TurnRequest
+
+        class _RecordingEngine:
+            def __init__(self) -> None:
+                self.requests: list[TurnRequest] = []
+                self._tool_emitted = False
+
+            def stream_turn(self, req: TurnRequest):
+                self.requests.append(req)
+                if emit_tool_on_first_round and not self._tool_emitted and req.tools:
+                    self._tool_emitted = True
+                    tool_name = req.tools[0].name
+                    probe = TurnChunk()
+                    if hasattr(probe, "tool_calls"):
+                        yield TurnChunk(
+                            tool_calls=[
+                                {"id": "tc-1", "name": tool_name, "arguments": {}}
+                            ]
+                        )
+                    else:
+                        yield TurnChunk(
+                            tool_call={"id": "tc-1", "name": tool_name, "arguments": {}}
+                        )
+                    return
+                yield TurnChunk(delta="ok")
+
+        return _RecordingEngine()
+
+    def _make_consolidator_engine(self):
+        from shinobu_core.protocol.engine import TurnChunk, TurnRequest
+
+        class _ConsolidatorEngine:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def complete_json(self, system_prompt: str, user_prompt: str) -> dict:
+                self.calls += 1
+                return {
+                    "summary": "consolidated",
+                    "journal": "ok",
+                    "facts": [],
+                    "memory_md": "",
+                }
+
+            def stream_turn(self, req: TurnRequest):
+                self.calls += 1
+                yield TurnChunk(
+                    delta='{"summary":"consolidated","journal":"ok","facts":[],"memory_md":""}'
+                )
+
+        return _ConsolidatorEngine()
+
+    def test_default_without_classifier_zero_drift(self) -> None:
+        from shinobu_core.runtime.orchestrator import Orchestrator
+
+        engine = self._make_recording_engine()
+        orch = Orchestrator(self.home, self.store, engine, kernel=self.kernel)
+
+        events = list(orch.send_message("hello world"))
+        self.assertTrue(any(e.kind == "done" for e in events))
+        self.assertEqual(len(engine.requests), 1)
+        self.assertEqual(engine.requests[0].reasoning_effort, "")
+        snap = orch.reasoning_snapshot()
+        self.assertEqual(snap["mode"], "default")
+        self.assertEqual(snap["effective_effort"], "")
+        self.assertEqual(snap["manual_effort"], "")
+
+    def test_monotonic_ratchet_and_prefix_sha256_immutable(self) -> None:
+        from shinobu_core.runtime.classifier import ClassificationResult
+        from shinobu_core.runtime.orchestrator import Orchestrator
+
+        planned = ["low", "medium", "low", "high", "low"]
+
+        class _ScriptedClassifier:
+            min_effort = "low"
+            max_effort = "high"
+
+            def __init__(self) -> None:
+                self.calls: list[tuple[str, str]] = []
+
+            def classify(self, user_text: str, *, current_effort: str = "low", recent_context: str = ""):
+                idx = len(self.calls)
+                self.calls.append((user_text, current_effort))
+                tier = planned[idx]
+                return ClassificationResult(
+                    effort=tier,
+                    backend="stub",
+                    elapsed_ms=2,
+                    upgraded=False,
+                    reason=f"step-{idx}",
+                )
+
+        engine = self._make_recording_engine()
+        cls = _ScriptedClassifier()
+        orch = Orchestrator(
+            self.home,
+            self.store,
+            engine,
+            kernel=self.kernel,
+            classifier=cls,
+        )
+
+        done_hashes: list[str] = []
+        for idx in range(len(planned)):
+            evs = list(orch.send_message(f"prompt-{idx}"))
+            done = [e for e in evs if e.kind == "done"][-1]
+            done_hashes.append(done.payload["prefix_sha256"])
+
+        self.assertEqual(
+            [r.reasoning_effort for r in engine.requests],
+            ["low", "medium", "medium", "high", "high"],
+        )
+        # Prefix SHA-256 and frozen system_prefix must never change across upgrades
+        self.assertEqual(len(set(done_hashes)), 1)
+        self.assertEqual(len({r.system_prefix for r in engine.requests}), 1)
+        snap = orch.reasoning_snapshot()
+        self.assertEqual(snap["mode"], "auto")
+        self.assertEqual(snap["episode_effort"], "high")
+        self.assertEqual(snap["effective_effort"], "high")
+        self.assertEqual(snap["manual_effort"], "")
+        self.assertIsNotNone(snap["last_classification"])
+        self.assertEqual(snap["last_classification"]["effort"], "high")
+
+    def test_tool_continuation_reuses_round0_effort_without_reclassifying(self) -> None:
+        from shinobu_core.runtime.classifier import ClassificationResult
+        from shinobu_core.runtime.orchestrator import Orchestrator
+
+        class _CountingClassifier:
+            min_effort = "low"
+            max_effort = "high"
+
+            def __init__(self) -> None:
+                self.count = 0
+
+            def classify(self, user_text: str, *, current_effort: str = "low"):
+                self.count += 1
+                return ClassificationResult(
+                    effort="medium",
+                    backend="stub",
+                    elapsed_ms=1,
+                    upgraded=True,
+                )
+
+        engine = self._make_recording_engine(emit_tool_on_first_round=True)
+        cls = _CountingClassifier()
+        orch = Orchestrator(
+            self.home,
+            self.store,
+            engine,
+            kernel=self.kernel,
+            classifier=cls,
+        )
+
+        list(orch.send_message("check memory tool"))
+        self.assertEqual(cls.count, 1)
+        self.assertEqual(len(engine.requests), 2)
+        self.assertEqual(
+            [r.reasoning_effort for r in engine.requests],
+            ["medium", "medium"],
+        )
+
+    def test_manual_lock_bypass_and_auto_recovery_on_episode_rotations(self) -> None:
+        from shinobu_core.runtime.classifier import ClassificationResult
+        from shinobu_core.runtime.orchestrator import Orchestrator
+
+        class _ConstantMediumClassifier:
+            min_effort = "low"
+            max_effort = "high"
+
+            def __init__(self) -> None:
+                self.count = 0
+
+            def classify(self, user_text: str, *, current_effort: str = "low"):
+                self.count += 1
+                return ClassificationResult(
+                    effort="medium",
+                    backend="stub",
+                    elapsed_ms=1,
+                    upgraded=True,
+                )
+
+        engine = self._make_recording_engine()
+        consolidator = self._make_consolidator_engine()
+        cls = _ConstantMediumClassifier()
+        resets: list[dict] = []
+        orch = Orchestrator(
+            self.home,
+            self.store,
+            engine,
+            kernel=self.kernel,
+            consolidator_engine=consolidator,
+            classifier=cls,
+            on_episode_reset=lambda payload: resets.append(payload),
+        )
+
+        # Manual lock before first turn must bypass classifier and survive initial ensure_episode
+        self.assertEqual(orch.set_manual_reasoning_effort("high"), "high")
+        list(orch.send_message("first locked message"))
+        self.assertEqual(cls.count, 0)
+        self.assertEqual(engine.requests[-1].reasoning_effort, "high")
+        self.assertEqual(orch.reasoning_snapshot()["mode"], "manual")
+
+        # Clearing manual lock with "auto" / "default" / "" restores automatic classification
+        self.assertEqual(orch.set_manual_reasoning_effort("auto"), "")
+        self.assertEqual(orch.reasoning_snapshot()["mode"], "auto")
+        list(orch.send_message("back to auto"))
+        self.assertEqual(cls.count, 1)
+        self.assertEqual(engine.requests[-1].reasoning_effort, "medium")
+
+        # archive_and_reset clears manual lock, resets episode_effort to low, and fires callback
+        orch.set_manual_reasoning_effort("high")
+        orch.archive_and_reset(summary="manual test")
+        self.assertEqual(orch.reasoning_snapshot()["mode"], "auto")
+        self.assertEqual(orch.reasoning_snapshot()["manual_effort"], "")
+        self.assertEqual(orch.reasoning_snapshot()["episode_effort"], "low")
+        self.assertEqual(len(resets), 1)
+        self.assertEqual(resets[-1]["reason"], "archive_and_reset")
+
+        # sleep_and_consolidate also resets manual lock and episode_effort
+        list(orch.send_message("turn before sleep"))
+        orch.set_manual_reasoning_effort("high")
+        orch.sleep_and_consolidate()
+        self.assertEqual(orch.reasoning_snapshot()["manual_effort"], "")
+        self.assertEqual(orch.reasoning_snapshot()["episode_effort"], "low")
+        self.assertEqual(len(resets), 2)
+        self.assertEqual(resets[-1]["reason"], "sleep_and_consolidate")
+
+        # Explicit episode_id switch resets manual lock and episode_effort
+        ep1 = orch.ensure_episode("ep-switch-1")
+        self.assertEqual(ep1.episode_id, "ep-switch-1")
+        orch.set_manual_reasoning_effort("high")
+        ep2 = orch.ensure_episode("ep-switch-2")
+        self.assertEqual(ep2.episode_id, "ep-switch-2")
+        self.assertEqual(orch.reasoning_snapshot()["manual_effort"], "")
+        self.assertEqual(orch.reasoning_snapshot()["episode_effort"], "low")
+        self.assertEqual(len(resets), 3)
+        self.assertEqual(resets[-1]["reason"], "episode_switch")
+
+    def test_inactivity_30min_zero_token_archive_and_restart_db_fallback(self) -> None:
+        from datetime import datetime, timedelta, timezone
+        from shinobu_core.runtime.classifier import ClassificationResult
+        from shinobu_core.runtime.orchestrator import Orchestrator
+
+        class _RealishClassifier:
+            min_effort = "low"
+            max_effort = "high"
+
+            def __init__(self, tiers: list[str]) -> None:
+                self._tiers = list(tiers)
+                self.count = 0
+
+            def classify(self, user_text: str, *, current_effort: str = "low"):
+                tier = self._tiers[min(self.count, len(self._tiers) - 1)]
+                self.count += 1
+                return ClassificationResult(
+                    effort=tier,
+                    backend="stub",
+                    elapsed_ms=1,
+                    upgraded=False,
+                )
+
+        now = [1000.0]
+        engine = self._make_recording_engine()
+        consolidator = self._make_consolidator_engine()
+        cls = _RealishClassifier(["high", "low"])
+        resets: list[dict] = []
+        orch = Orchestrator(
+            self.home,
+            self.store,
+            engine,
+            kernel=self.kernel,
+            consolidator_engine=consolidator,
+            classifier=cls,
+            inactivity_archive_sec=1800.0,
+            on_episode_reset=lambda payload: resets.append(payload),
+            clock=lambda: now[0],
+        )
+
+        # Empty active episode (0 turns) must NOT archive even if time advances
+        orch.ensure_episode("ep-empty-check")
+        now[0] += 3600.0
+        self.assertIsNone(orch.check_and_archive_inactive())
+        self.assertEqual(orch.active_episode_id, "ep-empty-check")
+
+        # Send a complex message -> ratchets to high; lock manual effort as well
+        list(orch.send_message("complex architecture analysis"))
+        first_ep = orch.active_episode_id
+        self.assertEqual(first_ep, "ep-empty-check")
+        self.assertEqual(engine.requests[-1].reasoning_effort, "high")
+        orch.set_manual_reasoning_effort("high")
+
+        # 29m59s later -> still active, no archive
+        now[0] += 1799.0
+        self.assertIsNone(orch.check_and_archive_inactive())
+        self.assertEqual(orch.active_episode_id, first_ep)
+
+        # 30m00s reached -> send_message lazily archives old episode (0 consolidator calls)
+        # and starts a fresh episode reset back to auto/low
+        now[0] += 1.0
+        list(orch.send_message("hi"))
+        second_ep = orch.active_episode_id
+        self.assertIsNotNone(second_ep)
+        self.assertNotEqual(second_ep, first_ep)
+        self.assertEqual(consolidator.calls, 0)
+        closed_row = self.store.get_episode(first_ep)
+        self.assertEqual(closed_row["status"], "closed")
+        self.assertEqual(closed_row["summary"], "(超时无活跃自动归档)")
+        self.assertEqual(engine.requests[-1].reasoning_effort, "low")
+        self.assertEqual(orch.reasoning_snapshot()["mode"], "auto")
+        self.assertEqual(orch.reasoning_snapshot()["manual_effort"], "")
+        self.assertEqual(len(resets), 1)
+
+        # Cross-restart SQLite created_at UTC fallback (new Orchestrator without mono state)
+        stale_ts = (
+            (datetime.now(timezone.utc) - timedelta(minutes=35))
+            .isoformat(timespec="milliseconds")
+            .replace("+00:00", "Z")
+        )
+        self.store._conn.execute(
+            "UPDATE turns SET created_at = ? WHERE episode_id = ?",
+            (stale_ts, second_ep),
+        )
+        self.store._conn.commit()
+
+        orch_restarted = Orchestrator(
+            self.home,
+            self.store,
+            engine,
+            kernel=self.kernel,
+            inactivity_archive_sec=1800.0,
+        )
+        archived = orch_restarted.check_and_archive_inactive()
+        self.assertIsNotNone(archived)
+        self.assertEqual(archived["status"], "archived")
+        self.assertEqual(archived["closed_episode_id"], second_ep)
+        self.assertEqual(self.store.get_episode(second_ep)["status"], "closed")
+
+    def test_integration_with_real_model_complexity_classifier(self) -> None:
+        from shinobu_core.runtime.classifier import ModelComplexityClassifier
+        from shinobu_core.runtime.orchestrator import Orchestrator
+
+        calls = {"n": 0}
+
+        def _fake_agy_call(prompt: str) -> str:
+            calls["n"] += 1
+            return "high" if "分布式" in prompt else "medium"
+
+        real_cls = ModelComplexityClassifier(
+            backend="agy",
+            agy_callable=_fake_agy_call,
+            min_effort="low",
+            max_effort="high",
+        )
+        engine = self._make_recording_engine()
+        orch = Orchestrator(
+            self.home,
+            self.store,
+            engine,
+            kernel=self.kernel,
+            classifier=real_cls,
+        )
+
+        # Smalltalk short-circuits at 0ms without invoking backend -> stays low
+        list(orch.send_message("好的"))
+        self.assertEqual(calls["n"], 0)
+        self.assertEqual(engine.requests[-1].reasoning_effort, "low")
+
+        # Medium task upgrades to medium
+        list(orch.send_message("帮我对比一下这两个排序算法的时间复杂度"))
+        self.assertEqual(calls["n"], 1)
+        self.assertEqual(engine.requests[-1].reasoning_effort, "medium")
+
+        # Complex task upgrades to high
+        list(orch.send_message("请设计一个高并发分布式共识协议的状态机"))
+        self.assertEqual(calls["n"], 2)
+        self.assertEqual(engine.requests[-1].reasoning_effort, "high")
+
+        # Ceiling short-circuits at 0ms without invoking backend -> remains high
+        list(orch.send_message("顺便再给我讲一个更长的技术背景故事"))
+        self.assertEqual(calls["n"], 2)
+        self.assertEqual(engine.requests[-1].reasoning_effort, "high")
+
+
 if __name__ == "__main__":
     unittest.main()

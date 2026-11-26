@@ -523,7 +523,16 @@ class OpenAICompatEngine:
             payload["temperature"] = self.temperature
         if req.tools:
             payload["tools"] = self._build_tools(req.tools)
+        clear_turn_effort = False
+        if req.reasoning_effort:
+            turn_effort = normalize_reasoning_effort(req.reasoning_effort)
+            if turn_effort:
+                payload["reasoning_effort"] = turn_effort
+            else:
+                clear_turn_effort = True
         self._apply_extra_body(payload)
+        if clear_turn_effort:
+            payload.pop("reasoning_effort", None)
 
         with self._open_request(payload, stream=True) as resp:
             content_type = (resp.headers.get("Content-Type") or "").lower()

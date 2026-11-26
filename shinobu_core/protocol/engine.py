@@ -40,6 +40,7 @@ class TurnRequest:
     history: list[dict[str, Any]] = field(default_factory=list)
     user_text: str = ""
     tools: list[ToolSpec] = field(default_factory=list)
+    reasoning_effort: str = ""
 
 
 @dataclass(slots=True)

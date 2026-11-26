@@ -1431,6 +1431,9 @@ class TelegramBotBridge:
         engine = str(result.get("engine") or "").strip()
         model = str(result.get("model") or "").strip()
         supports_switch = result.get("supports_reasoning_switch")
+        reasoning_mode = str(result.get("reasoning_mode") or "").strip().lower()
+        effective_effort = str(result.get("effective_reasoning_effort") or "").strip().lower()
+        episode_effort = str(result.get("episode_reasoning_effort") or "").strip().lower()
 
         label = self._THINK_EFFORT_LABELS.get(raw_effort, raw_effort or "🔄 默认")
         prev_label = self._THINK_EFFORT_LABELS.get(prev_effort, prev_effort or "🔄 默认")
@@ -1451,6 +1454,13 @@ class TelegramBotBridge:
         elif model:
             lines.append(f"- 当前模型：{model}")
         lines.append(f"- 当前档位：{label} ({raw_effort or 'default'})")
+        if reasoning_mode == "auto":
+            ratchet_val = effective_effort or episode_effort
+            if ratchet_val:
+                ratchet_label = self._THINK_EFFORT_LABELS.get(ratchet_val, ratchet_val)
+                lines.append(f"- 自动棘轮：{ratchet_label} ({ratchet_val})")
+        elif reasoning_mode == "manual" and raw_effort:
+            lines.append("- 自动分级：已手动锁定（切窗后自动恢复）")
         if switched and prev_effort != raw_effort:
             lines.append(f"- 变更：{prev_label} → {label}")
         if supports_switch is False:

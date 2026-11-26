@@ -9,20 +9,25 @@ preserving per-episode L0 prefix immutability (Prefix KV Cache safety).
 
 from __future__ import annotations
 
+import dataclasses
 from datetime import datetime, timezone
 import inspect
 import json
+import logging
 from pathlib import Path
 import re
-from typing import Any, Iterator
+import time
+from typing import Any, Callable, Iterator
 import uuid
 
 from shinobu_core.core.kernel import ShinobuKernel, default_home
+from shinobu_core.engines.openai_compat import normalize_reasoning_effort
 from shinobu_core.memory.consolidator import ConsolidationResult, consolidate_episode
 from shinobu_core.memory.store import MemoryStore
 from shinobu_core.memory.tools import build_memory_tools
 from shinobu_core.protocol.engine import EngineAdapter, ToolSpec, TurnRequest
 from shinobu_core.protocol.events import Event
+from shinobu_core.runtime.classifier import EFFORT_RANK, ratchet_effort
 from shinobu_core.soul.loader import ensure_soul_files, load_soul
 from shinobu_core.soul.prefix_freezer import (
     FrozenPrefix,
@@ -30,6 +35,42 @@ from shinobu_core.soul.prefix_freezer import (
     freeze_prefix,
     verify_frozen,
 )
+
+logger = logging.getLogger(__name__)
+
+
+def _parse_utc_timestamp(value: Any) -> datetime | None:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    raw = value.strip()
+    if raw.endswith("Z"):
+        raw = raw[:-1] + "+00:00"
+    try:
+        dt = datetime.fromisoformat(raw)
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+def _classification_to_dict(result: Any) -> dict[str, Any] | None:
+    if result is None:
+        return None
+    if isinstance(result, dict):
+        return dict(result)
+    if dataclasses.is_dataclass(result) and not isinstance(result, type):
+        return dataclasses.asdict(result)
+    effort = getattr(result, "effort", None)
+    if isinstance(effort, str):
+        return {
+            "effort": effort,
+            "backend": str(getattr(result, "backend", "") or ""),
+            "elapsed_ms": int(getattr(result, "elapsed_ms", 0) or 0),
+            "upgraded": bool(getattr(result, "upgraded", False)),
+            "reason": str(getattr(result, "reason", "") or ""),
+        }
+    return None
 
 
 def _utc_now_iso() -> str:
@@ -351,6 +392,10 @@ class Orchestrator:
         max_tool_rounds: int = DEFAULT_MAX_TOOL_ROUNDS,
         auto_recall_limit: int = DEFAULT_AUTO_RECALL_LIMIT,
         auto_recall_max_chars: int = DEFAULT_AUTO_RECALL_MAX_CHARS,
+        classifier: Any | None = None,
+        inactivity_archive_sec: float = 0.0,
+        on_episode_reset: Callable[[dict[str, Any]], Any] | None = None,
+        clock: Callable[[], float] | None = None,
     ) -> None:
         self.home: Path = Path(home) if home is not None else default_home()
         self.store: MemoryStore = store
@@ -361,13 +406,248 @@ class Orchestrator:
         self.max_tool_rounds: int = max(1, int(max_tool_rounds))
         self.auto_recall_limit: int = max(0, int(auto_recall_limit))
         self.auto_recall_max_chars: int = max(0, int(auto_recall_max_chars))
+        self.classifier: Any | None = classifier
+        self.inactivity_archive_sec: float = max(0.0, float(inactivity_archive_sec))
+        self._on_episode_reset: Callable[[dict[str, Any]], Any] | None = on_episode_reset
+        self._has_custom_clock: bool = clock is not None
+        self._clock: Callable[[], float] = clock or time.monotonic
 
         self._freezer: PrefixFreezer = PrefixFreezer()
         self._active_prefix: FrozenPrefix | None = None
         self._state: str = "idle"
         self._mood: str = "calm"
 
+        min_eff = self._resolve_classifier_bound("min_effort", "low")
+        max_eff = self._resolve_classifier_bound("max_effort", "high")
+        if EFFORT_RANK[min_eff] > EFFORT_RANK[max_eff]:
+            min_eff, max_eff = "low", "high"
+        self._min_effort: str = min_eff
+        self._max_effort: str = max_eff
+        self._episode_effort: str = self._min_effort
+        self._manual_effort: str = ""
+        self._last_classification: dict[str, Any] | None = None
+        self._last_activity_mono: float | None = None
+        self._last_activity_episode_id: str | None = None
+
         ensure_soul_files(self.home)
+
+    def _resolve_classifier_bound(self, attr: str, default: str) -> str:
+        raw = getattr(self.classifier, attr, None) if self.classifier is not None else None
+        if isinstance(raw, str) and raw.strip():
+            try:
+                norm = normalize_reasoning_effort(raw)
+                if norm in EFFORT_RANK:
+                    return norm
+            except ValueError:
+                pass
+        return default
+
+    def _touch_activity(self, episode_id: str) -> None:
+        self._last_activity_mono = float(self._clock())
+        self._last_activity_episode_id = episode_id
+
+    def set_manual_reasoning_effort(self, effort: str | None) -> str:
+        """Lock reasoning effort to a specific tier, or clear lock back to auto/default."""
+        raw = "" if effort is None else str(effort).strip().lower()
+        if raw in ("", "default", "auto"):
+            self._manual_effort = ""
+            return ""
+        norm = normalize_reasoning_effort(raw)
+        if not norm or norm not in EFFORT_RANK:
+            raise ValueError(f"Unsupported reasoning effort: {effort!r}")
+        self._manual_effort = norm
+        return self._manual_effort
+
+    def reasoning_snapshot(self) -> dict[str, Any]:
+        """Return a JSON-serializable snapshot of current reasoning effort state."""
+        if self._manual_effort:
+            mode = "manual"
+            effective_effort = self._manual_effort
+        elif self.classifier is not None:
+            mode = "auto"
+            effective_effort = self._episode_effort
+        else:
+            mode = "default"
+            effective_effort = ""
+        return {
+            "mode": mode,
+            "effective_effort": effective_effort,
+            "episode_effort": self._episode_effort,
+            "manual_effort": self._manual_effort,
+            "last_classification": (
+                dict(self._last_classification)
+                if self._last_classification is not None
+                else None
+            ),
+        }
+
+    def _reset_episode_reasoning(
+        self,
+        *,
+        reason: str,
+        closed_episode_id: str | None = None,
+        new_episode_id: str | None = None,
+    ) -> None:
+        prev_episode_effort = self._episode_effort
+        prev_manual_effort = self._manual_effort
+        self._manual_effort = ""
+        self._episode_effort = self._min_effort
+        self._last_classification = None
+        if self._on_episode_reset is not None:
+            payload = {
+                "reason": reason,
+                "closed_episode_id": closed_episode_id,
+                "episode_id": new_episode_id,
+                "previous_episode_effort": prev_episode_effort,
+                "previous_manual_effort": prev_manual_effort,
+                "episode_effort": self._episode_effort,
+                "manual_effort": self._manual_effort,
+                "mode": "auto" if self.classifier is not None else "default",
+            }
+            try:
+                self._on_episode_reset(payload)
+            except Exception as exc:
+                logger.warning("Orchestrator on_episode_reset callback failed: %s", exc)
+
+    def _invoke_classifier(
+        self,
+        user_text: str,
+        current_effort: str,
+        recent_history: list[dict[str, Any]],
+    ) -> Any:
+        classify_fn = getattr(self.classifier, "classify", None)
+        if not callable(classify_fn):
+            if callable(self.classifier):
+                classify_fn = self.classifier
+            else:
+                raise TypeError("classifier must expose a callable classify() method")
+
+        sig = inspect.signature(classify_fn)
+        params = sig.parameters
+        accepts_var_kw = any(
+            p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values()
+        )
+        kwargs: dict[str, Any] = {}
+        if "current_effort" in params or accepts_var_kw:
+            kwargs["current_effort"] = current_effort
+        if "recent_context" in params:
+            ann = str(params["recent_context"].annotation or "")
+            recent_slice = recent_history[-4:]
+            if any(tok in ann for tok in ("list", "List", "Sequence", "Iterable")):
+                kwargs["recent_context"] = list(recent_slice)
+            else:
+                formatted = "\n".join(
+                    f"{m.get('role', '')}: {str(m.get('content', ''))[:120]}"
+                    for m in recent_slice
+                ).strip()
+                kwargs["recent_context"] = formatted[:360]
+        return classify_fn(user_text, **kwargs)
+
+    def _resolve_turn_effort(
+        self,
+        user_text: str,
+        recent_history: list[dict[str, Any]],
+    ) -> str:
+        """Resolve effective reasoning effort once per user turn (round_idx == 0)."""
+        if self._manual_effort:
+            return self._manual_effort
+        if self.classifier is None:
+            return ""
+
+        current = self._episode_effort or self._min_effort
+        try:
+            raw_result = self._invoke_classifier(user_text, current, recent_history)
+            cls_dict = _classification_to_dict(raw_result)
+            if cls_dict is not None:
+                candidate = str(cls_dict.get("effort") or current)
+            elif isinstance(raw_result, str) and raw_result.strip():
+                candidate = raw_result.strip()
+                cls_dict = {
+                    "effort": candidate,
+                    "backend": "custom",
+                    "elapsed_ms": 0,
+                    "upgraded": False,
+                    "reason": "",
+                }
+            else:
+                candidate = current
+                cls_dict = {
+                    "effort": current,
+                    "backend": "fallback",
+                    "elapsed_ms": 0,
+                    "upgraded": False,
+                    "reason": "unrecognized_classifier_result",
+                }
+            new_effort = ratchet_effort(
+                current,
+                candidate,
+                min_effort=self._min_effort,
+                max_effort=self._max_effort,
+            )
+            upgraded = EFFORT_RANK[new_effort] > EFFORT_RANK[current]
+            self._episode_effort = new_effort
+            cls_dict["effort"] = new_effort
+            cls_dict["upgraded"] = upgraded
+            self._last_classification = cls_dict
+        except Exception as exc:
+            logger.warning(
+                "Complexity classifier failed; retaining effort %s: %s", current, exc
+            )
+            self._episode_effort = current
+            self._last_classification = {
+                "effort": current,
+                "backend": "fallback",
+                "elapsed_ms": 0,
+                "upgraded": False,
+                "reason": f"error: {exc}",
+            }
+        return self._episode_effort
+
+    def check_and_archive_inactive(self) -> dict[str, Any] | None:
+        """Zero-token lazy archive if the active episode has >=1 turn and exceeded inactivity TTL."""
+        if self.inactivity_archive_sec <= 0:
+            return None
+
+        ep_id: str | None = (
+            self._active_prefix.episode_id if self._active_prefix is not None else None
+        )
+        if ep_id is not None:
+            existing = self.store.get_episode(ep_id)
+            if existing is None or existing["status"] != "active":
+                ep_id = None
+        if ep_id is None:
+            active_ep = self.store.get_active_episode()
+            if active_ep is not None:
+                ep_id = str(active_ep["id"])
+        if ep_id is None:
+            return None
+
+        latest_turns = self.store.get_turns(ep_id, limit=1)
+        if not latest_turns:
+            return None
+
+        mono_elapsed: float | None = None
+        if (
+            self._last_activity_mono is not None
+            and self._last_activity_episode_id == ep_id
+        ):
+            mono_elapsed = max(0.0, float(self._clock()) - self._last_activity_mono)
+
+        db_elapsed: float | None = None
+        if mono_elapsed is None or not self._has_custom_clock:
+            turn_dt = _parse_utc_timestamp(latest_turns[-1].get("created_at"))
+            if turn_dt is not None:
+                db_elapsed = max(
+                    0.0, (datetime.now(timezone.utc) - turn_dt).total_seconds()
+                )
+
+        elapsed_candidates = [v for v in (mono_elapsed, db_elapsed) if v is not None]
+        if not elapsed_candidates:
+            return None
+
+        if max(elapsed_candidates) >= self.inactivity_archive_sec:
+            return self.archive_and_reset(summary="(超时无活跃自动归档)")
+        return None
 
     @property
     def active_episode_id(self) -> str | None:
@@ -487,6 +767,9 @@ class Orchestrator:
           and freeze L0 via `load_soul` + `freeze_prefix`, and persist it.
         """
         requested_id = episode_id.strip() if isinstance(episode_id, str) and episode_id.strip() else None
+        prev_episode_id = (
+            self._active_prefix.episode_id if self._active_prefix is not None else None
+        )
 
         if self._active_prefix is not None:
             if requested_id is None or requested_id == self._active_prefix.episode_id:
@@ -510,6 +793,14 @@ class Orchestrator:
             if not verify_frozen(restored):
                 raise ValueError(f"Stored prefix SHA-256 mismatch for episode {target_id!r}")
             self._active_prefix = restored
+            if prev_episode_id is not None and restored.episode_id != prev_episode_id:
+                self._last_activity_mono = None
+                self._last_activity_episode_id = None
+                self._reset_episode_reasoning(
+                    reason="episode_switch",
+                    closed_episode_id=prev_episode_id,
+                    new_episode_id=restored.episode_id,
+                )
             return restored
 
         yesterday_summary = self.store.latest_closed_summary()
@@ -534,6 +825,14 @@ class Orchestrator:
             raise ValueError(f"Persisted prefix SHA-256 mismatch for episode {target_id!r}")
 
         self._active_prefix = locked
+        if prev_episode_id is not None and locked.episode_id != prev_episode_id:
+            self._last_activity_mono = None
+            self._last_activity_episode_id = None
+            self._reset_episode_reasoning(
+                reason="episode_switch",
+                closed_episode_id=prev_episode_id,
+                new_episode_id=locked.episode_id,
+            )
         return locked
 
     # ------------------------------------------------------------------
@@ -551,6 +850,8 @@ class Orchestrator:
         if not text:
             raise ValueError("user_text must be a non-empty string")
 
+        self.check_and_archive_inactive()
+
         frozen = self.ensure_episode()
         ep_id = frozen.episode_id
         frozen_prefix_text = frozen.text
@@ -565,6 +866,7 @@ class Orchestrator:
 
         # Persist incoming user turn immediately (append-only, raw text only).
         self.store.append_turn(ep_id, "user", text)
+        self._touch_activity(ep_id)
 
         recall_block = _build_auto_recall_block(
             self.store,
@@ -586,9 +888,12 @@ class Orchestrator:
         assistant_parts: list[str] = []
         tool_rounds = 0
         user_pushed_to_history = False
+        effective_effort = ""
 
         try:
             for round_idx in range(self.max_tool_rounds + 1):
+                if round_idx == 0:
+                    effective_effort = self._resolve_turn_effort(text, working_history)
                 req_user_text = initial_user_text if round_idx == 0 else ""
                 req = TurnRequest(
                     episode_id=ep_id,
@@ -596,6 +901,7 @@ class Orchestrator:
                     history=list(working_history),
                     user_text=req_user_text,
                     tools=tools,
+                    reasoning_effort=effective_effort,
                 )
 
                 round_text_parts: list[str] = []
@@ -728,6 +1034,7 @@ class Orchestrator:
             final_text = "".join(assistant_parts)
             if final_text:
                 self.store.append_turn(ep_id, "assistant", final_text)
+            self._touch_activity(ep_id)
 
             idle_ev = self._transition_state("idle", ep_id)
             if idle_ev is not None:
@@ -786,6 +1093,12 @@ class Orchestrator:
         self._active_prefix = None
         if callable(getattr(self._freezer, "release", None)):
             self._freezer.release(ep_id)
+        self._last_activity_mono = None
+        self._last_activity_episode_id = None
+        self._reset_episode_reasoning(
+            reason="sleep_and_consolidate",
+            closed_episode_id=ep_id,
+        )
 
         self._emit_hook("episode_consolidated", result)
         return result
@@ -816,6 +1129,12 @@ class Orchestrator:
         self._active_prefix = None
         if callable(getattr(self._freezer, "release", None)):
             self._freezer.release(ep_id)
+        self._last_activity_mono = None
+        self._last_activity_episode_id = None
+        self._reset_episode_reasoning(
+            reason="archive_and_reset",
+            closed_episode_id=ep_id,
+        )
 
         return {
             "status": "archived",

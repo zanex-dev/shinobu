@@ -1125,6 +1125,7 @@ _CONSOLE_HTML = r"""<!DOCTYPE html>
         { id: "local", label: "local · 本地算力" }
       ];
       const REASONING_EFFORTS = [
+        { id: "default", label: "default · 自动" },
         { id: "off", label: "off · 关闭" },
         { id: "minimal", label: "minimal · 极简" },
         { id: "low", label: "low · 轻度" },
@@ -2578,12 +2579,23 @@ _CONSOLE_HTML = r"""<!DOCTYPE html>
           btn.disabled = !canRoute;
         });
 
-        const reasoningEffort = String(data.reasoning_effort || "medium").toLowerCase();
+        const rawEffort = String(data.reasoning_effort || "").trim().toLowerCase();
+        const reasoningEffort = rawEffort || "default";
+        const reasoningMode = String(data.reasoning_mode || "").trim().toLowerCase();
+        const effectiveEffort = String(
+          data.effective_reasoning_effort || data.episode_reasoning_effort || ""
+        ).trim().toLowerCase();
         const canReasoning = data.supports_reasoning_switch !== false;
         if (reasoningStatusEl) {
+          let statusText = "当前档位：" + reasoningEffort;
+          if (reasoningMode === "auto" && effectiveEffort) {
+            statusText = "当前档位：default（自动棘轮：" + effectiveEffort + "）";
+          } else if (reasoningMode === "manual" && rawEffort) {
+            statusText = "当前档位：" + rawEffort + "（手动锁定，切窗恢复自动）";
+          }
           reasoningStatusEl.textContent = canReasoning
-            ? ("当前档位：" + reasoningEffort)
-            : ("当前档位：" + reasoningEffort + "（当前引擎不支持运行时切换思考深度）");
+            ? statusText
+            : (statusText + "（当前引擎不支持运行时切换思考深度）");
         }
         document.querySelectorAll("#engine-reasoning-controls .pill").forEach((btn) => {
           btn.classList.toggle("active", btn.dataset.reasoning === reasoningEffort);

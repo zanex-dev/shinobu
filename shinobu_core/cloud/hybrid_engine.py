@@ -14,6 +14,7 @@ import urllib.parse
 import urllib.request
 
 from shinobu_core.cloud.registry import WorkerRecord, WorkerRegistry
+from shinobu_core.engines.openai_compat import normalize_reasoning_effort
 from shinobu_core.protocol.engine import EngineAdapter, ToolSpec, TurnChunk, TurnRequest
 
 logger = logging.getLogger(__name__)
@@ -158,14 +159,15 @@ class HybridRouterEngine:
     def reasoning_effort(self) -> str:
         """Proxy active reasoning_effort from the cloud fallback engine."""
         raw = getattr(self.cloud_fallback, "reasoning_effort", "")
-        return str(raw) if raw else ""
+        return normalize_reasoning_effort(str(raw)) if raw else ""
 
     @reasoning_effort.setter
     def reasoning_effort(self, value: str | None) -> None:
         """Proxy runtime reasoning_effort hot-switching to the cloud fallback engine."""
         if not hasattr(self.cloud_fallback, "reasoning_effort"):
             raise AttributeError("cloud_fallback engine does not support reasoning_effort")
-        setattr(self.cloud_fallback, "reasoning_effort", value)
+        normalized = normalize_reasoning_effort(value)
+        setattr(self.cloud_fallback, "reasoning_effort", normalized)
 
     @property
     def route_mode(self) -> str:
@@ -304,8 +306,17 @@ class HybridRouterEngine:
             raise RuntimeError(f"remote worker connection error: {exc}") from exc
 
     @staticmethod
-    def _serialize_turn_request(req: TurnRequest, model: str) -> dict[str, Any]:
-        return {
+    def _serialize_turn_request(
+        req: TurnRequest,
+        model: str,
+        reasoning_effort: str = "",
+    ) -> dict[str, Any]:
+        effective_effort = (
+            normalize_reasoning_effort(req.reasoning_effort)
+            if req.reasoning_effort
+            else normalize_reasoning_effort(reasoning_effort)
+        )
+        payload: dict[str, Any] = {
             "mode": "stream_turn",
             "episode_id": req.episode_id,
             "system_prefix": req.system_prefix,
@@ -314,6 +325,9 @@ class HybridRouterEngine:
             "tools": [tool.to_schema() for tool in req.tools if isinstance(tool, ToolSpec)],
             "model": model,
         }
+        if effective_effort:
+            payload["reasoning_effort"] = effective_effort
+        return payload
 
     @staticmethod
     def _parse_json_turn_chunks(data: Any) -> list[TurnChunk]:
@@ -400,7 +414,11 @@ class HybridRouterEngine:
         return TurnChunk(delta=delta_str, tool_calls=tool_calls, usage=usage, done=done_flag)
 
     def _stream_from_worker(self, worker: WorkerRecord, req: TurnRequest) -> Iterator[TurnChunk]:
-        payload = self._serialize_turn_request(req, self.model)
+        payload = self._serialize_turn_request(
+            req,
+            self.model,
+            reasoning_effort=self.reasoning_effort,
+        )
         with self._open_worker_request(worker, payload, accept_sse=True) as resp:
             content_type = (resp.headers.get("Content-Type") or "").lower()
             if "text/event-stream" not in content_type:

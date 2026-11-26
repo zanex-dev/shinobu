@@ -21,6 +21,7 @@ import urllib.parse
 import urllib.request
 
 from shinobu_core.cloud.approval import CommandTier, classify_command
+from shinobu_core.engines.openai_compat import normalize_reasoning_effort
 from shinobu_core.protocol.engine import EngineAdapter, TurnChunk, TurnRequest
 
 _LOOPBACK_HOSTNAMES: frozenset[str] = frozenset({"localhost", "127.0.0.1", "::1"})
@@ -548,12 +549,19 @@ class EdgeNodeServer:
     def _build_turn_request(payload: Mapping[str, Any]) -> TurnRequest:
         raw_history = payload.get("history")
         history = [dict(item) for item in raw_history if isinstance(item, Mapping)] if isinstance(raw_history, list) else []
+        raw_effort = payload.get("reasoning_effort")
+        reasoning_effort = (
+            normalize_reasoning_effort(raw_effort)
+            if raw_effort is not None
+            else ""
+        )
         return TurnRequest(
             episode_id=str(payload.get("episode_id") or ""),
             system_prefix=str(payload.get("system_prefix") or ""),
             history=history,
             user_text=str(payload.get("user_text") or ""),
             tools=_deserialize_tools(payload.get("tools")),
+            reasoning_effort=reasoning_effort,
         )
 
     @staticmethod

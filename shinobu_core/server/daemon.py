@@ -1870,21 +1870,43 @@ class _DaemonRequestHandler(BaseHTTPRequestHandler):
             if fallback is not None
             else ""
         )
-        self._send_json(
-            HTTPStatus.OK,
-            {
-                "engine": str(getattr(eng, "name", type(eng).__name__)),
-                "model": str(raw_model) if raw_model else "",
-                "supports_model_switch": hasattr(eng, "model"),
-                "route_mode": str(raw_route_mode) if raw_route_mode else "",
-                "supports_route_switch": supports_route_switch,
-                "reasoning_effort": str(raw_reasoning_effort) if raw_reasoning_effort else "",
-                "supports_reasoning_switch": supports_reasoning_switch,
-                "last_route": getattr(eng, "last_route", None),
-                "cloud_fallback_engine": cloud_fallback_engine,
-                "online_brain_workers": self._online_brain_workers(eng),
-            },
-        )
+        payload: dict[str, Any] = {
+            "engine": str(getattr(eng, "name", type(eng).__name__)),
+            "model": str(raw_model) if raw_model else "",
+            "supports_model_switch": hasattr(eng, "model"),
+            "route_mode": str(raw_route_mode) if raw_route_mode else "",
+            "supports_route_switch": supports_route_switch,
+            "reasoning_effort": str(raw_reasoning_effort) if raw_reasoning_effort else "",
+            "supports_reasoning_switch": supports_reasoning_switch,
+            "last_route": getattr(eng, "last_route", None),
+            "cloud_fallback_engine": cloud_fallback_engine,
+            "online_brain_workers": self._online_brain_workers(eng),
+        }
+        classifier = getattr(self._ctx.orchestrator, "classifier", None)
+        if classifier is not None:
+            snap_fn = getattr(self._ctx.orchestrator, "reasoning_snapshot", None)
+            snap = snap_fn() if callable(snap_fn) else {}
+            if not isinstance(snap, dict):
+                snap = {}
+            payload["reasoning_mode"] = str(
+                snap.get("mode") or ("manual" if payload["reasoning_effort"] else "auto")
+            )
+            payload["effective_reasoning_effort"] = str(
+                snap.get("effective_effort") or payload["reasoning_effort"] or ""
+            )
+            payload["episode_reasoning_effort"] = str(snap.get("episode_effort") or "")
+            payload["classifier"] = {
+                "enabled": True,
+                "backend": str(getattr(classifier, "backend", "auto")),
+                "min_effort": str(getattr(classifier, "min_effort", "low")),
+                "max_effort": str(getattr(classifier, "max_effort", "high")),
+                "has_api_backend": bool(getattr(classifier, "has_api_backend", False)),
+                "has_agy_backend": bool(getattr(classifier, "has_agy_backend", False)),
+                "api_model": str(getattr(classifier, "api_model", "") or ""),
+                "ema_ms": dict(getattr(classifier, "ema_ms", {}) or {}),
+                "last_classification": snap.get("last_classification"),
+            }
+        self._send_json(HTTPStatus.OK, payload)
 
     def _handle_api_engine_route(self) -> None:
         body = self._read_json_body(allow_empty=False)
@@ -2020,6 +2042,9 @@ class _DaemonRequestHandler(BaseHTTPRequestHandler):
                 return
             curr_raw = getattr(eng, "reasoning_effort", None)
             current_effort = str(curr_raw) if curr_raw else ""
+            set_manual = getattr(self._ctx.orchestrator, "set_manual_reasoning_effort", None)
+            if callable(set_manual):
+                set_manual(current_effort)
             self._ctx._save_reasoning_effort(current_effort)
 
         snap = self._ctx.state_machine.snapshot()
@@ -2260,8 +2285,44 @@ class DaemonServer:
         try:
             normalized = normalize_reasoning_effort(raw_effort)
             setattr(eng, "reasoning_effort", normalized)
+            set_manual = getattr(self.orchestrator, "set_manual_reasoning_effort", None)
+            if callable(set_manual):
+                set_manual(normalized)
         except (ValueError, AttributeError):
             return
+
+    def handle_episode_reset(self, info: dict[str, Any] | None = None) -> None:
+        """Clear engine manual reasoning override and persisted file when an episode resets."""
+        eng = self.orchestrator.engine
+        if not self._supports_reasoning_switch(eng):
+            return
+        prev_raw = getattr(eng, "reasoning_effort", None)
+        previous_effort = str(prev_raw) if prev_raw else ""
+        if previous_effort:
+            try:
+                setattr(eng, "reasoning_effort", "")
+            except (ValueError, AttributeError):
+                pass
+        if previous_effort or self.reasoning_effort_path.is_file():
+            self._save_reasoning_effort("")
+
+    def notify_episode_idle_archived(
+        self,
+        archived: Any = None,
+        *,
+        previous_effort: str = "",
+    ) -> None:
+        """Publish a STATE_CHANGED event after an inactivity-triggered episode archive."""
+        snap = self.state_machine.snapshot()
+        snap["episode_id"] = self.orchestrator.active_episode_id
+        snap["reason"] = "episode_idle_archived"
+        snap["reasoning_effort"] = ""
+        snap["previous_reasoning_effort"] = previous_effort
+        if isinstance(archived, dict) and archived.get("closed_episode_id"):
+            snap["closed_episode_id"] = archived["closed_episode_id"]
+        elif isinstance(archived, str) and archived:
+            snap["closed_episode_id"] = archived
+        self.publish_event(Event(kind=EventKind.STATE_CHANGED, payload=snap))
 
     def _attach_heartbeat(self, heartbeat: HeartbeatLoop) -> None:
         prev_publish = heartbeat.publish

@@ -1759,6 +1759,51 @@ class TestCliAndDualGate(unittest.TestCase):
                                     _d.orchestrator.store.append_turn(_ep.episode_id, "user", "hi")
                                     self.assertEqual(_d.heartbeat._on_auto_sleep(), "consolidated")
                                     _mock_sleep.assert_called_once()
+
+                                # Default 1800s inactivity archive wiring & idle archive event
+                                self.assertEqual(_d.heartbeat.auto_archive_after_sec, 1800.0)
+                                self.assertEqual(_d.orchestrator.inactivity_archive_sec, 1800.0)
+                                self.assertIsNotNone(_d.heartbeat._on_auto_archive)
+                                _idle_events = []
+                                with _mock.patch.object(
+                                    _d,
+                                    "publish_event",
+                                    side_effect=_idle_events.append,
+                                ), _mock.patch.object(
+                                    _d.orchestrator,
+                                    "check_and_archive_inactive",
+                                    return_value="ep_idle_1",
+                                ) as _mock_idle:
+                                    self.assertEqual(_d.heartbeat._on_auto_archive(), "ep_idle_1")
+                                    _mock_idle.assert_called_once()
+                                self.assertTrue(
+                                    any(
+                                        getattr(ev, "payload", {}).get("reason")
+                                        == "episode_idle_archived"
+                                        for ev in _idle_events
+                                    )
+                                )
+                                # doctor --json includes classifier diagnostics
+                                import contextlib as _ctxlib
+                                import io as _io
+                                from shinobu_core.server import cli as _cli_mod
+
+                                _doc_buf = _io.StringIO()
+                                with _mock.patch.dict(
+                                    os.environ,
+                                    {"SHINOBU_HOME": str(_auto_kernel.home)},
+                                    clear=False,
+                                ), _ctxlib.redirect_stdout(_doc_buf):
+                                    _doc_rc = _cli_mod.main(["doctor", "--json"])
+                                self.assertEqual(_doc_rc, 0)
+                                _doc_obj = json.loads(_doc_buf.getvalue())
+                                self.assertIn("classifier", _doc_obj)
+                                self.assertIn("enabled", _doc_obj["classifier"])
+                                self.assertIn("ready", _doc_obj["classifier"])
+                                self.assertEqual(
+                                    _doc_obj["classifier"]["episode_idle_archive_sec"],
+                                    1800.0,
+                                )
                             finally:
                                 _d_store.close()
 

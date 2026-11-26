@@ -19,6 +19,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Iterator, Mapping, Sequence
 
+from shinobu_core.engines.openai_compat import normalize_reasoning_effort
 from shinobu_core.protocol.engine import ToolSpec, TurnChunk, TurnRequest
 
 _VALID_SDK_MODES = ("gemini", "openai_local", "litert")
@@ -446,6 +447,8 @@ class AgySdkEngine:
         save_dir: str | None = None,
         *,
         api_key: str | None = None,
+        effort: str | None = None,
+        reasoning_effort: str | None = None,
         disable_builtin_tools: bool = True,
         app_data_dir: str | None = None,
         session_map_path: str | None = None,
@@ -453,6 +456,7 @@ class AgySdkEngine:
     ) -> None:
         if mode not in _VALID_SDK_MODES:
             raise ValueError(f"Unsupported mode {mode!r}; expected one of {_VALID_SDK_MODES}")
+        initial_effort = reasoning_effort if reasoning_effort is not None else effort
         self.name: str = name
         self.mode: str = mode
         self.model: str | None = model
@@ -460,6 +464,8 @@ class AgySdkEngine:
         self.model_path: str | None = model_path
         self.save_dir: str | None = save_dir
         self.api_key: str | None = api_key
+        self._effort_lock = threading.RLock()
+        self._reasoning_effort: str = normalize_reasoning_effort(initial_effort)
         self.disable_builtin_tools: bool = disable_builtin_tools
         self.app_data_dir: str | None = (
             os.path.abspath(os.path.expanduser(str(app_data_dir)))
@@ -472,6 +478,19 @@ class AgySdkEngine:
         self._session_lock = threading.Lock()
         self._episode_conversations: dict[str, str] = _load_session_map(self.session_map_path)
         self._last_sdk_tool_calls_count: int = 0
+
+    @property
+    def reasoning_effort(self) -> str:
+        """Return active default reasoning_effort (empty string when unset)."""
+        with self._effort_lock:
+            return self._reasoning_effort
+
+    @reasoning_effort.setter
+    def reasoning_effort(self, value: str | None) -> None:
+        """Thread-safely hot-switch or clear default reasoning_effort."""
+        normalized = normalize_reasoning_effort(value)
+        with self._effort_lock:
+            self._reasoning_effort = normalized
 
     @staticmethod
     def _load_sdk() -> tuple[Any, Any]:
@@ -566,6 +585,14 @@ class AgySdkEngine:
             kwargs["model"] = self.model
         if self.api_key is not None:
             kwargs["api_key"] = self.api_key
+        effective_effort = (
+            normalize_reasoning_effort(req.reasoning_effort)
+            if req.reasoning_effort
+            else self.reasoning_effort
+        )
+        if effective_effort:
+            kwargs["reasoning_effort"] = effective_effort
+            kwargs["effort"] = effective_effort
         if self.mode == "openai_local" and self.base_url is not None:
             kwargs["base_url"] = self.base_url
         if self.mode == "litert" and self.model_path is not None:
@@ -883,9 +910,31 @@ class AgyCliEngine:
         self._proc_lock = threading.Lock()
         self._persistent_proc: subprocess.Popen[str] | None = None
         self._persistent_episode_id: str | None = None
+        self._persistent_effort: str = ""
         self._persistent_seeded: bool = False
         self._persistent_stderr_buf: list[str] = []
         self._persistent_stderr_thread: threading.Thread | None = None
+
+    @property
+    def reasoning_effort(self) -> str:
+        """Return active default reasoning_effort (empty string when unset)."""
+        if not self.effort:
+            return ""
+        try:
+            return normalize_reasoning_effort(self.effort)
+        except ValueError:
+            return self.effort
+
+    @reasoning_effort.setter
+    def reasoning_effort(self, value: str | None) -> None:
+        """Hot-switch or clear default reasoning_effort."""
+        normalized = normalize_reasoning_effort(value)
+        self.effort = normalized or None
+
+    def _resolve_turn_effort(self, req: TurnRequest) -> str:
+        if req.reasoning_effort:
+            return normalize_reasoning_effort(req.reasoning_effort)
+        return self.effort or ""
 
     def _resolve_binary(self) -> str:
         resolved = shutil.which(self.binary, path=_augmented_agy_path())
@@ -1050,8 +1099,9 @@ class AgyCliEngine:
         ]
         if self.model:
             cmd.extend(["--model", self.model])
-        if self.effort:
-            cmd.extend(["--effort", self.effort])
+        eff = self._resolve_turn_effort(req)
+        if eff:
+            cmd.extend(["--effort", eff])
         if self.agent_mode:
             cmd.extend(["--mode", self.agent_mode])
         for extra_dir in self.add_dirs:
@@ -1070,6 +1120,8 @@ class AgyCliEngine:
         self,
         resolved_binary: str,
         saved_conv_id: str | None = None,
+        *,
+        effort: str | None = None,
     ) -> list[str]:
         cmd = [
             resolved_binary,
@@ -1081,8 +1133,9 @@ class AgyCliEngine:
         ]
         if self.model:
             cmd.extend(["--model", self.model])
-        if self.effort:
-            cmd.extend(["--effort", self.effort])
+        eff = (self.effort or "") if effort is None else effort
+        if eff:
+            cmd.extend(["--effort", eff])
         if self.agent_mode:
             cmd.extend(["--mode", self.agent_mode])
         for extra_dir in self.add_dirs:
@@ -1206,6 +1259,7 @@ class AgyCliEngine:
                 stderr_buf = self._persistent_stderr_buf
                 self._persistent_proc = None
                 self._persistent_episode_id = None
+                self._persistent_effort = ""
                 self._persistent_seeded = False
                 self._persistent_stderr_thread = None
                 self._persistent_stderr_buf = []
@@ -1225,7 +1279,10 @@ class AgyCliEngine:
         resolved_binary: str,
         episode_id: str,
         saved_conv_id: str | None,
+        *,
+        effort: str | None = None,
     ) -> tuple[subprocess.Popen[str], bool, bool, list[str]]:
+        effective_effort = (self.effort or "") if effort is None else effort
         stale_proc: subprocess.Popen[str] | None = None
         stale_stderr_thread: threading.Thread | None = None
 
@@ -1237,13 +1294,18 @@ class AgyCliEngine:
                     is_alive = proc.poll() is None
                 except Exception:
                     is_alive = False
-                if is_alive and self._persistent_episode_id == episode_id:
+                if (
+                    is_alive
+                    and self._persistent_episode_id == episode_id
+                    and self._persistent_effort == effective_effort
+                ):
                     has_persisted = bool(self._persistent_seeded or saved_conv_id)
                     return proc, True, has_persisted, self._persistent_stderr_buf
                 stale_proc = proc
                 stale_stderr_thread = self._persistent_stderr_thread
                 self._persistent_proc = None
                 self._persistent_episode_id = None
+                self._persistent_effort = ""
                 self._persistent_seeded = False
                 self._persistent_stderr_thread = None
                 self._persistent_stderr_buf = []
@@ -1251,7 +1313,11 @@ class AgyCliEngine:
         if stale_proc is not None:
             self._terminate_process(stale_proc, stderr_thread=stale_stderr_thread)
 
-        cmd = self._build_persistent_command(resolved_binary, saved_conv_id)
+        cmd = self._build_persistent_command(
+            resolved_binary,
+            saved_conv_id,
+            effort=effective_effort,
+        )
         new_proc = subprocess.Popen(
             cmd,
             stdin=subprocess.PIPE,
@@ -1269,6 +1335,7 @@ class AgyCliEngine:
         with self._proc_lock:
             self._persistent_proc = new_proc
             self._persistent_episode_id = episode_id
+            self._persistent_effort = effective_effort
             self._persistent_seeded = has_persisted
             self._persistent_stderr_buf = stderr_buf
             self._persistent_stderr_thread = stderr_thread
@@ -1513,10 +1580,12 @@ class AgyCliEngine:
             saved_conv_id = (
                 self._episode_conversations.get(req.episode_id) if req.episode_id else None
             )
+            turn_effort = self._resolve_turn_effort(req)
             proc, reused_existing, has_persisted, stderr_buf = self._ensure_persistent_process(
                 resolved_binary,
                 req.episode_id,
                 saved_conv_id,
+                effort=turn_effort,
             )
             attempt_state["reused_persistent"] = reused_existing
 

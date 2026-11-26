@@ -794,6 +794,69 @@ class TestOpenAICompatEngine(unittest.TestCase):
             self.assertEqual(self.received_requests[0]["payload"]["model"], "primary-model")
             self.assertEqual(sleeps, [])
 
+    def test_single_turn_reasoning_effort_overrides_without_mutating_extra_body(self) -> None:
+        self.scenario = "sse_text"
+        engine = OpenAICompatEngine(
+            base_url=f"http://127.0.0.1:{self.port}/v1",
+            model="gemini-3-pro",
+            extra_body={"reasoning_effort": "low", "custom_flag": True},
+        )
+        self.assertEqual(engine.reasoning_effort, "low")
+
+        # 1. Single-turn override normalizes and wins over extra_body without mutating _extra_body.
+        list(
+            engine.stream_turn(
+                TurnRequest(
+                    episode_id="ep-eff-1",
+                    system_prefix="sys",
+                    user_text="hard task",
+                    reasoning_effort="HIGH",
+                )
+            )
+        )
+        self.assertEqual(self.received_requests[-1]["payload"]["reasoning_effort"], "high")
+        self.assertEqual(self.received_requests[-1]["payload"]["custom_flag"], True)
+        self.assertEqual(engine.reasoning_effort, "low")
+        self.assertEqual(engine._extra_body["reasoning_effort"], "low")
+
+        # 2. Empty TurnRequest.reasoning_effort falls back to engine's default extra_body.
+        list(
+            engine.stream_turn(
+                TurnRequest(
+                    episode_id="ep-eff-1",
+                    system_prefix="sys",
+                    user_text="easy task",
+                )
+            )
+        )
+        self.assertEqual(self.received_requests[-1]["payload"]["reasoning_effort"], "low")
+
+        # 3. Alias normalization ("med" -> "medium") and per-turn clear ("default").
+        list(
+            engine.stream_turn(
+                TurnRequest(
+                    episode_id="ep-eff-1",
+                    system_prefix="sys",
+                    user_text="med task",
+                    reasoning_effort="med",
+                )
+            )
+        )
+        self.assertEqual(self.received_requests[-1]["payload"]["reasoning_effort"], "medium")
+
+        list(
+            engine.stream_turn(
+                TurnRequest(
+                    episode_id="ep-eff-1",
+                    system_prefix="sys",
+                    user_text="clear task",
+                    reasoning_effort="default",
+                )
+            )
+        )
+        self.assertNotIn("reasoning_effort", self.received_requests[-1]["payload"])
+        self.assertEqual(engine.reasoning_effort, "low")
+
 
 class TestAgySdkEngine(unittest.TestCase):
     def _build_fake_sdk(self) -> tuple[dict[str, Any], dict[str, types.ModuleType]]:
@@ -1144,6 +1207,49 @@ class TestAgySdkEngine(unittest.TestCase):
                 )
                 self.assertEqual(recorded["configs"][1]["conversation_id"], "conv-persisted-001")
                 self.assertEqual(recorded["prompts"][1], "second turn")
+
+    def test_sdk_reasoning_effort_property_and_single_turn_override(self) -> None:
+        recorded, fake_modules = self._build_fake_sdk()
+        with mock.patch.dict(sys.modules, fake_modules):
+            engine = AgySdkEngine(
+                mode="gemini",
+                model="gemini-2.5-pro",
+                effort="low",
+            )
+            self.assertEqual(engine.reasoning_effort, "low")
+
+            # Turn 1: single-turn override to "high" does not mutate engine default.
+            list(
+                engine.stream_turn(
+                    TurnRequest(
+                        episode_id="ep-sdk-eff",
+                        system_prefix="sys",
+                        user_text="analyze",
+                        reasoning_effort="high",
+                    )
+                )
+            )
+            self.assertEqual(recorded["configs"][0]["reasoning_effort"], "high")
+            self.assertEqual(recorded["configs"][0]["effort"], "high")
+            self.assertEqual(engine.reasoning_effort, "low")
+
+            # Turn 2: empty TurnRequest.reasoning_effort falls back to engine.reasoning_effort.
+            list(
+                engine.stream_turn(
+                    TurnRequest(
+                        episode_id="ep-sdk-eff",
+                        system_prefix="sys",
+                        user_text="chat",
+                    )
+                )
+            )
+            self.assertEqual(recorded["configs"][1]["reasoning_effort"], "low")
+
+            # Runtime hot-switch & clear via property setter.
+            engine.reasoning_effort = "med"
+            self.assertEqual(engine.reasoning_effort, "medium")
+            engine.reasoning_effort = "default"
+            self.assertEqual(engine.reasoning_effort, "")
 
 
 class _BlockingFakeStdout:
@@ -2768,6 +2874,195 @@ class TestAgyCliEngine(unittest.TestCase):
             # Sync state was cleared during stale recovery and rebuilt with only the 4 fresh entries.
             persisted_after_rebuild = json.loads(sync_state_file.read_text(encoding="utf-8"))
             self.assertEqual(len(persisted_after_rebuild["ep-stale"]), 4)
+
+    def test_cli_single_turn_effort_and_persistent_upgrade_respawns_with_conversation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            session_map = Path(tmpdir) / "ratchet_sessions.json"
+
+            # 1. One-shot CLI single-turn override without mutating engine.effort.
+            oneshot_proc = _FakePopenProcess(
+                [json.dumps({"type": "result", "result": "oneshot-high"}) + "\n"],
+                returncode=0,
+            )
+            with (
+                mock.patch("shutil.which", return_value="/opt/agy/bin/agy"),
+                mock.patch("subprocess.Popen", return_value=oneshot_proc) as popen_oneshot,
+            ):
+                oneshot_engine = AgyCliEngine(binary="agy", effort="low", persistent=False, timeout=5.0)
+                self.assertEqual(oneshot_engine.reasoning_effort, "low")
+                out = "".join(
+                    c.delta
+                    for c in oneshot_engine.stream_turn(
+                        TurnRequest(
+                            episode_id="ep-oneshot-eff",
+                            system_prefix="SYS",
+                            user_text="deep-q",
+                            reasoning_effort="high",
+                        )
+                    )
+                )
+                self.assertEqual(out, "oneshot-high")
+                cmd_one = popen_oneshot.call_args.args[0]
+                self.assertEqual(cmd_one[cmd_one.index("--effort") + 1], "high")
+                self.assertEqual(oneshot_engine.effort, "low")
+                self.assertEqual(oneshot_engine.reasoning_effort, "low")
+
+            # 2. Persistent CLI: Turn 1 (low) -> Turn 2 (low, reuse) -> Turn 3 (high, terminate & respawn with --conversation) -> Turn 4 (high, reuse).
+            low_proc = self._make_persistent_proc(
+                [
+                    [
+                        json.dumps({"event": "init", "conversation_id": "agy-ratchet-conv-1"}) + "\n",
+                        json.dumps(
+                            {
+                                "event": "result",
+                                "result": {
+                                    "conversation_id": "agy-ratchet-conv-1",
+                                    "status": "SUCCESS",
+                                    "response": "low-turn-1",
+                                },
+                            }
+                        )
+                        + "\n",
+                    ],
+                    [
+                        json.dumps(
+                            {
+                                "event": "result",
+                                "result": {
+                                    "conversation_id": "agy-ratchet-conv-1",
+                                    "status": "SUCCESS",
+                                    "response": "low-turn-2",
+                                },
+                            }
+                        )
+                        + "\n",
+                    ],
+                ]
+            )
+            high_proc = self._make_persistent_proc(
+                [
+                    [
+                        json.dumps(
+                            {
+                                "event": "result",
+                                "result": {
+                                    "conversation_id": "agy-ratchet-conv-1",
+                                    "status": "SUCCESS",
+                                    "response": "high-turn-3",
+                                },
+                            }
+                        )
+                        + "\n",
+                    ],
+                    [
+                        json.dumps(
+                            {
+                                "event": "result",
+                                "result": {
+                                    "conversation_id": "agy-ratchet-conv-1",
+                                    "status": "SUCCESS",
+                                    "response": "high-turn-4",
+                                },
+                            }
+                        )
+                        + "\n",
+                    ],
+                ]
+            )
+
+            with (
+                mock.patch("shutil.which", return_value="/opt/agy/bin/agy"),
+                mock.patch("subprocess.Popen", side_effect=[low_proc, high_proc]) as popen_persist,
+            ):
+                p_engine = AgyCliEngine(
+                    binary="agy",
+                    effort="low",
+                    persistent=True,
+                    session_map_path=str(session_map),
+                    timeout=5.0,
+                )
+                try:
+                    t1 = "".join(
+                        c.delta
+                        for c in p_engine.stream_turn(
+                            TurnRequest(
+                                episode_id="ep-ratchet",
+                                system_prefix="SYS",
+                                user_text="hello",
+                            )
+                        )
+                    )
+                    self.assertEqual(t1, "low-turn-1")
+                    self.assertEqual(popen_persist.call_count, 1)
+                    self.assertEqual(p_engine._persistent_effort, "low")
+
+                    # Same episode + same effective effort ("low") reuses low_proc.
+                    t2 = "".join(
+                        c.delta
+                        for c in p_engine.stream_turn(
+                            TurnRequest(
+                                episode_id="ep-ratchet",
+                                system_prefix="SYS",
+                                history=[
+                                    {"role": "user", "content": "hello"},
+                                    {"role": "assistant", "content": "low-turn-1"},
+                                ],
+                                user_text="small talk",
+                                reasoning_effort="low",
+                            )
+                        )
+                    )
+                    self.assertEqual(t2, "low-turn-2")
+                    self.assertEqual(popen_persist.call_count, 1)
+                    self.assertFalse(low_proc.terminated)
+
+                    # Upgrade to "high" terminates low_proc and spawns high_proc resuming --conversation.
+                    t3 = "".join(
+                        c.delta
+                        for c in p_engine.stream_turn(
+                            TurnRequest(
+                                episode_id="ep-ratchet",
+                                system_prefix="SYS",
+                                history=[
+                                    {"role": "user", "content": "hello"},
+                                    {"role": "assistant", "content": "low-turn-1"},
+                                    {"role": "user", "content": "small talk"},
+                                    {"role": "assistant", "content": "low-turn-2"},
+                                ],
+                                user_text="design distributed architecture",
+                                reasoning_effort="high",
+                            )
+                        )
+                    )
+                    self.assertEqual(t3, "high-turn-3")
+                    self.assertTrue(low_proc.terminated)
+                    self.assertEqual(popen_persist.call_count, 2)
+                    self.assertEqual(p_engine._persistent_effort, "high")
+
+                    cmd_high = popen_persist.call_args_list[1].args[0]
+                    self.assertEqual(cmd_high[cmd_high.index("--effort") + 1], "high")
+                    self.assertEqual(
+                        cmd_high[cmd_high.index("--conversation") + 1],
+                        "agy-ratchet-conv-1",
+                    )
+
+                    # Subsequent "high" turn reuses high_proc without respawning.
+                    t4 = "".join(
+                        c.delta
+                        for c in p_engine.stream_turn(
+                            TurnRequest(
+                                episode_id="ep-ratchet",
+                                system_prefix="SYS",
+                                user_text="follow-up detail",
+                                reasoning_effort="high",
+                            )
+                        )
+                    )
+                    self.assertEqual(t4, "high-turn-4")
+                    self.assertEqual(popen_persist.call_count, 2)
+                    self.assertFalse(high_proc.terminated)
+                finally:
+                    p_engine.close()
 
 
 if __name__ == "__main__":

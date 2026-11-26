@@ -1542,6 +1542,80 @@ class TestEdgePresenceSensorAndEvaluator(unittest.TestCase):
         finally:
             cloud.stop()
 
+    def test_hybrid_to_edge_node_reasoning_effort_passthrough(self) -> None:
+        class _EffortCloudFallback(_FakeCloudFallbackEngine):
+            def __init__(self) -> None:
+                super().__init__()
+                self.reasoning_effort: str = ""
+                self.seen_efforts: list[str] = []
+
+            def stream_turn(self, req: TurnRequest) -> Iterator[TurnChunk]:
+                self.seen_efforts.append(req.reasoning_effort)
+                yield from super().stream_turn(req)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            local_engine = _FakeLocalEngine()
+            edge_server = EdgeNodeServer(
+                local_engine,
+                node_token="edge-eff-tok",
+                allowed_roots=[Path(tmp)],
+                port=0,
+            )
+            with edge_server:
+                registry = WorkerRegistry()
+                registry.register(
+                    WorkerRecord(
+                        worker_id="pc_eff",
+                        role="primary",
+                        base_url=edge_server.base_url,
+                        capabilities=("agy_cli",),
+                        token="edge-eff-tok",
+                        ttl_sec=60.0,
+                    )
+                )
+                fallback = _EffortCloudFallback()
+                hybrid = HybridRouterEngine(
+                    fallback,
+                    registry,
+                    primary_capability="agy_cli",
+                )
+
+                # 1. Engine-level default reasoning_effort flows to EdgeNodeServer when TurnRequest.reasoning_effort is empty.
+                hybrid.reasoning_effort = "low"
+                self.assertEqual(hybrid.reasoning_effort, "low")
+                list(
+                    hybrid.stream_turn(
+                        TurnRequest(
+                            episode_id="ep-hybrid-eff",
+                            system_prefix="SYS",
+                            user_text="greeting",
+                        )
+                    )
+                )
+                self.assertEqual(len(local_engine.turn_requests), 1)
+                self.assertEqual(local_engine.turn_requests[0].reasoning_effort, "low")
+
+                # 2. Single-turn TurnRequest.reasoning_effort overrides engine-level default without mutating it.
+                list(
+                    hybrid.stream_turn(
+                        TurnRequest(
+                            episode_id="ep-hybrid-eff",
+                            system_prefix="SYS",
+                            user_text="complex reasoning",
+                            reasoning_effort="HIGH",
+                        )
+                    )
+                )
+                self.assertEqual(len(local_engine.turn_requests), 2)
+                self.assertEqual(local_engine.turn_requests[1].reasoning_effort, "high")
+                self.assertEqual(hybrid.reasoning_effort, "low")
+
+                # 3. Direct EdgeNodeServer._build_turn_request alias normalization & empty default.
+                built_med = EdgeNodeServer._build_turn_request({"user_text": "q", "reasoning_effort": "med"})
+                self.assertEqual(built_med.reasoning_effort, "medium")
+                built_empty = EdgeNodeServer._build_turn_request({"user_text": "q"})
+                self.assertEqual(built_empty.reasoning_effort, "")
+
 
 if __name__ == "__main__":
     unittest.main()

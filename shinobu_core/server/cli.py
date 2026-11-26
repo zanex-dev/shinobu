@@ -512,6 +512,26 @@ def build_daemon(
         resolved_engine = resolve_engine_name(engine_name)
         engine = _build_engine(kernel, resolved_engine, worker_registry=registry)
         consolidator_engine = getattr(engine, "cloud_fallback", None) or engine
+        from shinobu_core.runtime.classifier import build_classifier_from_env
+
+        classifier = build_classifier_from_env(home, consolidator_engine)
+
+        raw_idle_archive = os.environ.get("SHINOBU_EPISODE_IDLE_ARCHIVE_SEC", "").strip()
+        if not raw_idle_archive:
+            idle_archive_sec = 1800.0
+        else:
+            try:
+                idle_archive_sec = float(raw_idle_archive)
+            except ValueError:
+                idle_archive_sec = 1800.0
+        if idle_archive_sec < 0.0:
+            idle_archive_sec = 0.0
+
+        def _on_episode_reset(info: dict[str, Any]) -> None:
+            if not daemon_ref:
+                return
+            daemon_ref[0].handle_episode_reset(info)
+
         orchestrator = Orchestrator(
             home,
             store,
@@ -519,6 +539,9 @@ def build_daemon(
             kernel=kernel,
             consolidator_engine=consolidator_engine,
             auto_recall_limit=auto_recall_limit,
+            classifier=classifier,
+            inactivity_archive_sec=idle_archive_sec,
+            on_episode_reset=_on_episode_reset,
         )
         active_ep = _find_active_episode_id(db_path)
         if active_ep is not None:
@@ -601,6 +624,22 @@ def build_daemon(
                     return None
                 return orchestrator.sleep_and_consolidate()
 
+        def _on_auto_archive() -> Any:
+            if not daemon_ref:
+                return None
+            current_daemon = daemon_ref[0]
+            with current_daemon.chat_lock:
+                prev_raw = getattr(orchestrator.engine, "reasoning_effort", None)
+                previous_effort = str(prev_raw) if prev_raw else ""
+                archived = orchestrator.check_and_archive_inactive()
+                if not archived:
+                    return None
+                current_daemon.notify_episode_idle_archived(
+                    archived,
+                    previous_effort=previous_effort,
+                )
+                return archived
+
         state_machine = PetStateMachine()
         heartbeat = HeartbeatLoop(
             store=store,
@@ -610,6 +649,8 @@ def build_daemon(
             interval_sec=interval_sec,
             auto_sleep_after_sec=auto_sleep_sec,
             on_auto_sleep=_on_auto_sleep if auto_sleep_sec > 0.0 else None,
+            auto_archive_after_sec=idle_archive_sec,
+            on_auto_archive=_on_auto_archive if idle_archive_sec > 0.0 else None,
             daily_briefing_hour=daily_briefing_hour,
             tz_offset_hours=tz_offset_hours,
             briefing_builder=_build_daily_briefing if daily_briefing_hour is not None else None,
@@ -691,10 +732,29 @@ def _cmd_chat(args: argparse.Namespace, kernel: ShinobuKernel) -> int:
     engine_name = resolve_engine_name(getattr(args, "engine", None))
     engine = _build_engine(kernel, engine_name)
 
+    from shinobu_core.runtime.classifier import build_classifier_from_env
+
+    consolidator_engine = getattr(engine, "cloud_fallback", None) or engine
+    classifier = build_classifier_from_env(home, consolidator_engine)
+    raw_idle_archive = os.environ.get("SHINOBU_EPISODE_IDLE_ARCHIVE_SEC", "").strip()
+    try:
+        idle_archive_sec = float(raw_idle_archive) if raw_idle_archive else 1800.0
+    except ValueError:
+        idle_archive_sec = 1800.0
+    if idle_archive_sec < 0.0:
+        idle_archive_sec = 0.0
+
     mcp_manager = _attach_mcp_manager(kernel)
     try:
         with MemoryStore(db_path) as store:
-            orchestrator = Orchestrator(home, store, engine, kernel=kernel)
+            orchestrator = Orchestrator(
+                home,
+                store,
+                engine,
+                kernel=kernel,
+                classifier=classifier,
+                inactivity_archive_sec=idle_archive_sec,
+            )
             active_ep = _find_active_episode_id(db_path)
             if active_ep is not None:
                 orchestrator.ensure_episode(active_ep)
@@ -1023,6 +1083,9 @@ def build_telegram_bridge(
         route_mode = engine_data.get("route_mode")
         reasoning_effort = str(engine_data.get("reasoning_effort") or "").strip()
         supports_reasoning = engine_data.get("supports_reasoning_switch")
+        reasoning_mode = str(engine_data.get("reasoning_mode") or "").strip().lower()
+        effective_effort = str(engine_data.get("effective_reasoning_effort") or "").strip()
+        episode_effort = str(engine_data.get("episode_reasoning_effort") or "").strip()
         brain_workers = engine_data.get("online_brain_workers")
         last_route = engine_data.get("last_route")
 
@@ -1034,7 +1097,12 @@ def build_telegram_bridge(
         if route_mode:
             lines.append(f"- Route mode: {route_mode}")
         if supports_reasoning is True or reasoning_effort or "reasoning_effort" in engine_data:
-            lines.append(f"- Reasoning: {reasoning_effort or 'default'}")
+            if reasoning_mode == "auto" and (effective_effort or episode_effort):
+                lines.append(f"- Reasoning: auto (ratchet: {effective_effort or episode_effort})")
+            elif reasoning_mode == "manual" and reasoning_effort:
+                lines.append(f"- Reasoning: {reasoning_effort} (manual lock)")
+            else:
+                lines.append(f"- Reasoning: {reasoning_effort or 'default'}")
         if isinstance(brain_workers, list):
             worker_text = ", ".join(str(w) for w in brain_workers) if brain_workers else "none (cloud fallback)"
             lines.append(f"- Brain workers: {worker_text}")
@@ -2440,6 +2508,55 @@ def collect_doctor_report(kernel: ShinobuKernel) -> dict[str, Any]:
     loaded_plugins = sum(1 for rec in plugin_records if rec["status"] == "loaded")
     failed_plugins = len(plugin_records) - loaded_plugins
 
+    from shinobu_core.runtime.classifier import (
+        _DISABLED_ENV_VALUES as _CLF_DISABLED_VALUES,
+        _VALID_BACKENDS as _CLF_VALID_BACKENDS,
+        _infer_default_api_model,
+        _read_dotenv_classifier_vars,
+    )
+
+    clf_dotenv = _read_dotenv_classifier_vars(home)
+
+    def _clf_cfg(name: str, default: str = "") -> str:
+        if name in os.environ:
+            return os.environ[name].strip()
+        return clf_dotenv.get(name, default).strip()
+
+    clf_enabled_raw = _clf_cfg("SHINOBU_CLASSIFIER_ENABLED", "1").lower()
+    clf_backend_raw = _clf_cfg("SHINOBU_CLASSIFIER_BACKEND", "auto").lower() or "auto"
+    clf_enabled = (
+        clf_enabled_raw not in _CLF_DISABLED_VALUES
+        and clf_backend_raw not in _CLF_DISABLED_VALUES
+        and clf_backend_raw != "none"
+    )
+    clf_backend = clf_backend_raw if clf_backend_raw in _CLF_VALID_BACKENDS else "auto"
+    clf_min_effort = _clf_cfg("SHINOBU_CLASSIFIER_MIN_EFFORT", "low") or "low"
+    clf_max_effort = _clf_cfg("SHINOBU_CLASSIFIER_MAX_EFFORT", "high") or "high"
+    clf_base_url = _clf_cfg("SHINOBU_CLASSIFIER_BASE_URL") or os.environ.get(
+        "SHINOBU_BASE_URL", ""
+    ).strip()
+    clf_api_key = _clf_cfg("SHINOBU_CLASSIFIER_API_KEY") or os.environ.get(
+        "SHINOBU_API_KEY", ""
+    ).strip()
+    clf_api_configured = bool(clf_base_url)
+    clf_api_model = _clf_cfg("SHINOBU_CLASSIFIER_MODEL") or (
+        _infer_default_api_model(clf_base_url, clf_api_key) if clf_api_configured else ""
+    )
+    raw_doc_idle = os.environ.get("SHINOBU_EPISODE_IDLE_ARCHIVE_SEC", "").strip()
+    try:
+        doc_idle_archive_sec = float(raw_doc_idle) if raw_doc_idle else 1800.0
+    except ValueError:
+        doc_idle_archive_sec = 1800.0
+    if doc_idle_archive_sec < 0.0:
+        doc_idle_archive_sec = 0.0
+    clf_ready = bool(
+        clf_enabled
+        and (
+            (clf_backend in ("auto", "api") and clf_api_configured and bool(clf_api_model))
+            or (clf_backend in ("auto", "agy") and sdk_available)
+        )
+    )
+
     official_install_hints: dict[str, str] = {
         "agy_sdk": "pip install google-antigravity",
         "agy_cli": "Install the Antigravity CLI (`agy`) and ensure it is on PATH, or set SHINOBU_AGY_BIN.",
@@ -2472,6 +2589,17 @@ def collect_doctor_report(kernel: ShinobuKernel) -> dict[str, Any]:
                 "tool_permission": agy_cli_settings["tool_permission"],
                 "allow_non_workspace_access": agy_cli_settings["allow_non_workspace_access"],
             },
+        },
+        "classifier": {
+            "enabled": clf_enabled,
+            "ready": clf_ready,
+            "backend": clf_backend,
+            "min_effort": clf_min_effort,
+            "max_effort": clf_max_effort,
+            "api_base_url_configured": clf_api_configured,
+            "api_model": clf_api_model,
+            "agy_sdk_available": sdk_available,
+            "episode_idle_archive_sec": doc_idle_archive_sec,
         },
         "credentials": {
             "shinobu_api_key": {"present": shinobu_api_key_present},

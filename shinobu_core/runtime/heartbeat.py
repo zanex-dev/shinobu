@@ -74,6 +74,8 @@ class HeartbeatLoop:
         sleepy_after_sec: float = 900.0,
         auto_sleep_after_sec: float = 0.0,
         on_auto_sleep: Callable[[], Any] | None = None,
+        auto_archive_after_sec: float = 0.0,
+        on_auto_archive: Callable[[], Any] | None = None,
         daily_briefing_hour: int | None = None,
         tz_offset_hours: float = 8.0,
         briefing_builder: Callable[[], str | None] | None = None,
@@ -88,6 +90,9 @@ class HeartbeatLoop:
         self.auto_sleep_after_sec: float = max(0.0, float(auto_sleep_after_sec))
         self._on_auto_sleep: Callable[[], Any] | None = on_auto_sleep
         self._auto_sleep_done: bool = False
+        self.auto_archive_after_sec: float = max(0.0, float(auto_archive_after_sec))
+        self._on_auto_archive: Callable[[], Any] | None = on_auto_archive
+        self._auto_archive_done: bool = False
 
         if daily_briefing_hour is not None:
             hour = int(daily_briefing_hour)
@@ -261,6 +266,21 @@ class HeartbeatLoop:
                     self._on_auto_sleep()
                 except Exception as exc:
                     logger.warning("Heartbeat auto-sleep callback failed: %s", exc)
+
+        # 3c. Optional zero-token idle auto-archive hook (independent of auto_sleep_after_sec)
+        if self.auto_archive_after_sec > 0 and self._on_auto_archive is not None:
+            should_auto_archive = False
+            with self._lock:
+                if idle_sec < self.auto_archive_after_sec:
+                    self._auto_archive_done = False
+                elif not self._auto_archive_done:
+                    self._auto_archive_done = True
+                    should_auto_archive = True
+            if should_auto_archive:
+                try:
+                    self._on_auto_archive()
+                except Exception as exc:
+                    logger.warning("Heartbeat auto-archive callback failed: %s", exc)
 
         with self._lock:
             self._tick_count += 1

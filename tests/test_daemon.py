@@ -2043,6 +2043,113 @@ class TestDaemonCommunityControlAPI(unittest.TestCase):
                     {"error": "reasoning_switch_unsupported"},
                 )
 
+    def test_api_engine_classifier_status_manual_sync_and_episode_reset(self) -> None:
+        from shinobu_core.engines.openai_compat import OpenAICompatEngine
+        from shinobu_core.memory.store import MemoryStore
+        from shinobu_core.runtime.classifier import ModelComplexityClassifier
+        from shinobu_core.runtime.orchestrator import Orchestrator
+        from shinobu_core.runtime.state_machine import PetStateMachine
+        from shinobu_core.server.daemon import DaemonServer
+
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            store = MemoryStore(home / "memory.db")
+            try:
+                eng = OpenAICompatEngine(
+                    base_url="https://example.invalid/v1",
+                    api_key="test-key",
+                    model="test-model",
+                )
+                clf = ModelComplexityClassifier(
+                    backend="api",
+                    api_caller=lambda _s, _u, _t: "medium",
+                )
+                daemon_box: list[DaemonServer] = []
+                orch = Orchestrator(
+                    home,
+                    store,
+                    eng,
+                    classifier=clf,
+                    on_episode_reset=lambda info: daemon_box[0].handle_episode_reset(info)
+                    if daemon_box
+                    else None,
+                )
+                daemon = DaemonServer(
+                    orchestrator=orch,
+                    state_machine=PetStateMachine(),
+                    home=home,
+                    port=0,
+                )
+                daemon_box.append(daemon)
+                daemon.start()
+                try:
+                    # 1. GET /api/engine includes classifier status in auto mode.
+                    st0, _, raw0 = self._raw_request(
+                        daemon,
+                        "GET",
+                        "/api/engine",
+                        headers=self._auth_headers(daemon),
+                    )
+                    self.assertEqual(st0, 200)
+                    info0 = json.loads(raw0.decode("utf-8"))
+                    self.assertEqual(info0["reasoning_effort"], "")
+                    self.assertEqual(info0["reasoning_mode"], "auto")
+                    self.assertEqual(info0["effective_reasoning_effort"], "low")
+                    self.assertEqual(info0["episode_reasoning_effort"], "low")
+                    self.assertTrue(info0["classifier"]["enabled"])
+                    self.assertEqual(info0["classifier"]["backend"], "api")
+
+                    # 2. POST /api/engine/reasoning preserves exact 4-key contract & syncs manual lock.
+                    st1, _, raw1 = self._raw_request(
+                        daemon,
+                        "POST",
+                        "/api/engine/reasoning",
+                        headers=self._auth_headers(daemon, json_body=True),
+                        body=json.dumps({"reasoning_effort": "high"}).encode("utf-8"),
+                    )
+                    self.assertEqual(st1, 200)
+                    resp1 = json.loads(raw1.decode("utf-8"))
+                    self.assertEqual(
+                        set(resp1.keys()),
+                        {"ok", "engine", "reasoning_effort", "previous_reasoning_effort"},
+                    )
+                    self.assertEqual(resp1["reasoning_effort"], "high")
+                    self.assertEqual(eng.reasoning_effort, "high")
+
+                    st2, _, raw2 = self._raw_request(
+                        daemon,
+                        "GET",
+                        "/api/engine",
+                        headers=self._auth_headers(daemon),
+                    )
+                    self.assertEqual(st2, 200)
+                    info2 = json.loads(raw2.decode("utf-8"))
+                    self.assertEqual(info2["reasoning_mode"], "manual")
+                    self.assertEqual(info2["effective_reasoning_effort"], "high")
+
+                    # 3. Episode reset clears engine override and persisted reasoning_effort.json.
+                    orch.ensure_episode()
+                    orch.archive_and_reset(summary="reset lock test")
+                    self.assertEqual(eng.reasoning_effort, "")
+                    persisted = json.loads(
+                        daemon.reasoning_effort_path.read_text(encoding="utf-8")
+                    )
+                    self.assertEqual(persisted["reasoning_effort"], "")
+                    st3, _, raw3 = self._raw_request(
+                        daemon,
+                        "GET",
+                        "/api/engine",
+                        headers=self._auth_headers(daemon),
+                    )
+                    self.assertEqual(st3, 200)
+                    info3 = json.loads(raw3.decode("utf-8"))
+                    self.assertEqual(info3["reasoning_mode"], "auto")
+                    self.assertEqual(info3["effective_reasoning_effort"], "low")
+                finally:
+                    daemon.stop()
+            finally:
+                store.close()
+
     def test_api_episodes_list_and_new_with_restart_recovery(self) -> None:
         stub = _StubEngine()
         with self._make_daemon(stub) as daemon:
