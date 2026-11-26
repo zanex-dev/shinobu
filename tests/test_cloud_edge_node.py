@@ -901,6 +901,311 @@ class TestNodeBubbleAndClientLifecycle(unittest.TestCase):
         finally:
             cloud.stop()
 
+    def test_client_delayed_cloud_startup_auto_registers_and_fires_callback(self) -> None:
+        import socket
+
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+            probe.bind(("127.0.0.1", 0))
+            port = probe.getsockname()[1]
+
+        cloud_url = f"http://127.0.0.1:{port}"
+        registered_events: list[bool] = []
+        errors: list[tuple[str, Exception]] = []
+        seen_paths: list[tuple[str, str]] = []
+
+        class _DelayedCloudHandler(BaseHTTPRequestHandler):
+            def do_POST(self) -> None:
+                length = int(self.headers.get("Content-Length", "0") or 0)
+                if length:
+                    self.rfile.read(length)
+                seen_paths.append(("POST", self.path))
+                body = json.dumps({"ok": True}).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def do_DELETE(self) -> None:
+                seen_paths.append(("DELETE", self.path))
+                body = json.dumps({"ok": True}).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, format: str, *args: Any) -> None:
+                return
+
+        client = EdgeNodeClient(
+            cloud_url,
+            "cloud-secret",
+            worker_id="home_pc",
+            advertise_url="http://100.64.0.10:18792",
+            node_token="edge-tok",
+            heartbeat_sec=0.06,
+            request_timeout_sec=0.5,
+            on_error=lambda stage, exc: errors.append((stage, exc)),
+            on_registered=lambda is_re: registered_events.append(is_re),
+            presence_enabled=False,
+        )
+        server: ThreadingHTTPServer | None = None
+        server_thread: threading.Thread | None = None
+        try:
+            ok = client.start(fail_fast=False)
+            self.assertFalse(ok)
+            self.assertFalse(client.is_registered)
+            self.assertEqual(registered_events, [])
+            self.assertTrue(any(stage == "register" for stage, _ in errors))
+
+            # Start cloud control plane after the edge client is already waiting.
+            server = ThreadingHTTPServer(("127.0.0.1", port), _DelayedCloudHandler)
+            server_thread = threading.Thread(target=server.serve_forever, daemon=True)
+            server_thread.start()
+
+            deadline = time.time() + 2.5
+            while time.time() < deadline:
+                if client.is_registered and registered_events:
+                    break
+                time.sleep(0.03)
+
+            self.assertTrue(client.is_registered)
+            self.assertEqual(registered_events, [False])
+            self.assertIn(("POST", "/api/workers/register"), seen_paths)
+        finally:
+            client.stop(unregister=server is not None)
+            if server is not None:
+                server.shutdown()
+                server.server_close()
+            if server_thread is not None:
+                server_thread.join(timeout=2.0)
+
+    def test_client_heartbeat_network_error_resets_registered_and_reregisters_on_recovery(self) -> None:
+        cloud = _MockCloudControlPlane(expected_token="cloud-secret")
+        cloud_url = cloud.start()
+        registered_events: list[bool] = []
+        errors: list[tuple[str, Exception]] = []
+        try:
+            client = EdgeNodeClient(
+                cloud_url,
+                "cloud-secret",
+                worker_id="home_pc",
+                advertise_url="http://100.64.0.10:18792",
+                node_token="edge-tok",
+                heartbeat_sec=0.06,
+                ttl_sec=30.0,
+                on_error=lambda stage, exc: errors.append((stage, exc)),
+                on_registered=lambda is_re: registered_events.append(is_re),
+                presence_enabled=False,
+            )
+            self.assertTrue(client.start(fail_fast=True))
+            self.assertEqual(registered_events, [False])
+            self.assertTrue(client.is_registered)
+
+            orig_request_json = client._request_json
+            network_down = threading.Event()
+
+            def _flaky_request_json(
+                method: str,
+                path: str,
+                payload: Any = None,
+            ) -> tuple[int, dict[str, Any]]:
+                if network_down.is_set() and path == "/api/workers/heartbeat":
+                    raise urllib.error.URLError("simulated vpn drop")
+                return orig_request_json(method, path, payload)
+
+            client._request_json = _flaky_request_json  # type: ignore[method-assign]
+
+            # Direct heartbeat failure must reset _registered before re-raising.
+            network_down.set()
+            with self.assertRaises(urllib.error.URLError):
+                client.send_heartbeat()
+            self.assertFalse(client.is_registered)
+
+            # Once VPN recovers, next heartbeat tick immediately calls register() -> on_registered(True).
+            reg_before = sum(1 for m, p, _ in cloud.events if m == "POST" and p == "/api/workers/register")
+            network_down.clear()
+
+            deadline = time.time() + 2.0
+            while time.time() < deadline:
+                if client.is_registered and len(registered_events) >= 2:
+                    break
+                time.sleep(0.03)
+
+            self.assertTrue(client.is_registered)
+            self.assertEqual(registered_events, [False, True])
+            reg_after = sum(1 for m, p, _ in cloud.events if m == "POST" and p == "/api/workers/register")
+            self.assertGreater(reg_after, reg_before)
+
+            client.stop()
+        finally:
+            cloud.stop()
+
+    def test_cmd_node_honest_startup_status_and_rate_limited_callbacks(self) -> None:
+        import argparse
+        import contextlib
+        import io
+        from unittest import mock
+
+        from shinobu_core.server import cli as cli_mod
+
+        # Verify build_edge_node forwards on_error and on_registered to EdgeNodeClient.
+        cb_err = lambda stage, exc: None
+        cb_reg = lambda is_re: None
+        _srv, real_client = cli_mod.build_edge_node(
+            object(),  # type: ignore[arg-type]
+            cloud_url="http://127.0.0.1:18790",
+            engine_name="none",
+            presence_enabled=False,
+            on_error=cb_err,
+            on_registered=cb_reg,
+        )
+        self.assertIs(real_client._on_error, cb_err)
+        self.assertIs(real_client._on_registered, cb_reg)
+
+        def _make_args() -> argparse.Namespace:
+            return argparse.Namespace(
+                cloud_url="http://100.64.0.1:18790",
+                cloud_token="tok",
+                node_token="node-tok",
+                worker_id="home_pc",
+                bind_host="127.0.0.1",
+                port=18792,
+                advertise_url="http://100.64.0.10:18792",
+                engine="none",
+                allowed_root=None,
+                airi_bubble_url="",
+                heartbeat_sec=15.0,
+                effort=None,
+                agy_mode=None,
+                no_persistent=False,
+                no_presence=True,
+            )
+
+        class _FakeServer:
+            def start(self) -> dict[str, Any]:
+                return {"url": "http://100.64.0.10:18792"}
+
+            def stop(self) -> None:
+                return
+
+        class _InstantStopEvent:
+            def __init__(self, on_wait: Any = None) -> None:
+                self._set = False
+                self._on_wait = on_wait
+
+            def is_set(self) -> bool:
+                return self._set
+
+            def set(self) -> None:
+                self._set = True
+
+            def wait(self, timeout: float | None = None) -> bool:
+                if self._on_wait is not None:
+                    self._on_wait()
+                self._set = True
+                return True
+
+        # Case 1: Initial registration succeeds -> prints "(registered with ...)".
+        class _ConnectedClient:
+            def __init__(self, on_registered: Any) -> None:
+                self.worker_id = "home_pc"
+                self.advertise_url = "http://100.64.0.10:18792"
+                self.heartbeat_sec = 15.0
+                self._on_registered = on_registered
+
+            def start(self) -> bool:
+                if self._on_registered is not None:
+                    self._on_registered(False)
+                return True
+
+            def stop(self) -> bool:
+                return True
+
+        def _build_connected(_kernel: Any, **kwargs: Any) -> tuple[Any, Any]:
+            return _FakeServer(), _ConnectedClient(kwargs.get("on_registered"))
+
+        out_ok = io.StringIO()
+        err_ok = io.StringIO()
+        with (
+            mock.patch.object(cli_mod, "build_edge_node", side_effect=_build_connected),
+            mock.patch.object(cli_mod.threading, "Event", return_value=_InstantStopEvent()),
+            contextlib.redirect_stdout(out_ok),
+            contextlib.redirect_stderr(err_ok),
+        ):
+            rc = cli_mod._cmd_node(_make_args(), object())  # type: ignore[arg-type]
+
+        self.assertEqual(rc, 0)
+        self.assertIn("(registered with http://100.64.0.1:18790)", out_ok.getvalue())
+        self.assertNotIn("waiting for cloud", out_ok.getvalue())
+        self.assertEqual(out_ok.getvalue().count("registered with"), 1)
+        self.assertEqual(err_ok.getvalue(), "")
+
+        # Case 2: Initial registration fails -> prints "(waiting for cloud ...)", rate-limits errors, logs reconnect.
+        captured_callbacks: dict[str, Any] = {}
+        fake_now = [100.0]
+
+        class _WaitingClient:
+            def __init__(self, on_error: Any, on_registered: Any) -> None:
+                self.worker_id = "home_pc"
+                self.advertise_url = "http://100.64.0.10:18792"
+                self.heartbeat_sec = 15.0
+                self._on_error = on_error
+                self._on_registered = on_registered
+
+            def start(self) -> bool:
+                if self._on_error is not None:
+                    self._on_error("register", OSError("vpn not ready"))
+                return False
+
+            def stop(self) -> bool:
+                return True
+
+        def _build_waiting(_kernel: Any, **kwargs: Any) -> tuple[Any, Any]:
+            captured_callbacks["on_error"] = kwargs.get("on_error")
+            captured_callbacks["on_registered"] = kwargs.get("on_registered")
+            return _FakeServer(), _WaitingClient(
+                captured_callbacks["on_error"],
+                captured_callbacks["on_registered"],
+            )
+
+        def _simulate_background_events() -> None:
+            on_err = captured_callbacks["on_error"]
+            on_reg = captured_callbacks["on_registered"]
+            # Same error within 60s -> suppressed.
+            fake_now[0] = 120.0
+            on_err("register", OSError("vpn not ready"))
+            # Same error at >=60s -> logged again.
+            fake_now[0] = 165.0
+            on_err("register", OSError("vpn not ready"))
+            # Background late registration & subsequent reconnect.
+            on_reg(False)
+            on_reg(True)
+
+        out_wait = io.StringIO()
+        err_wait = io.StringIO()
+        with (
+            mock.patch.object(cli_mod, "build_edge_node", side_effect=_build_waiting),
+            mock.patch.object(cli_mod.threading, "Event", return_value=_InstantStopEvent(_simulate_background_events)),
+            mock.patch.object(cli_mod.time, "monotonic", side_effect=lambda: fake_now[0]),
+            contextlib.redirect_stdout(out_wait),
+            contextlib.redirect_stderr(err_wait),
+        ):
+            rc = cli_mod._cmd_node(_make_args(), object())  # type: ignore[arg-type]
+
+        self.assertEqual(rc, 0)
+        stdout_text = out_wait.getvalue()
+        stderr_text = err_wait.getvalue()
+        self.assertIn(
+            "(waiting for cloud http://100.64.0.1:18790; retrying every 15s)",
+            stdout_text,
+        )
+        self.assertNotIn("(registered with http://100.64.0.1:18790)", stdout_text)
+        self.assertIn("registered with http://100.64.0.1:18790", stdout_text)
+        self.assertIn("re-registered with http://100.64.0.1:18790", stdout_text)
+        self.assertEqual(stderr_text.count("vpn not ready"), 2)
+
 
 class TestEdgePresenceSensorAndEvaluator(unittest.TestCase):
     def test_get_system_idle_seconds_win32_wrap_and_degradation(self) -> None:

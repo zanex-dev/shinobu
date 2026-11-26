@@ -17,7 +17,7 @@
 </p>
 
 <p align="center">
-  <a href="README.md"><strong>English</strong></a> · <a href="README_ZH.md"><strong>简体中文</strong></a> · <a href="deploy/gcp_setup.md">GCP 7×24 云端部署指南</a> · <a href="CHANGELOG_ZH.md">更新日志</a>
+  <a href="README.md"><strong>English</strong></a> · <a href="README_ZH.md"><strong>简体中文</strong></a> · <a href="AGENTS.md">架构与模块导览</a> · <a href="deploy/gcp_setup.md">GCP 7×24 云端部署指南</a> · <a href="CHANGELOG_ZH.md">更新日志</a>
 </p>
 
 ---
@@ -202,11 +202,17 @@ shinobu avatar --source ./my_avatars --name custom
 
 | 指令 | 说明 |
 |---|---|
+| `/session` / `/sessions` / `/archive` | 打开对话管理与归档面板（查看、切换或归档对话）。 |
+| `/new` | 秒开新对话（快速归档旧对话）。 |
+| `/sleep` | 整理记忆并归档当前对话。 |
+| `/brain [cloud\|hybrid\|local]` / `/mode` | 查看或切换推理引擎（云端 / 混合 / 本地）。 |
+| `/think [off\|low\|medium\|high]` / `/effort` | 查看或调整思考深度（关闭 / 低 / 中 / 高）。 |
 | `/status` | 查看云端运行状态、活跃引擎与待审批数量。 |
 | `/nodes` | 查看当前在线的本机 PC / Colab GPU 节点。 |
-| `/voice on` / `/voice off` | 按需开关语音条回复。 |
+| `/voice [on\|off]` | 查看或按需开关语音条回复。 |
 | `/remind` / `/reminders` | 查看 SQLite `timemap` 中的待触发提醒列表。 |
 | `/remind <10m\|2h\|HH:MM\|ISO> <内容>` | 新建提醒（支持相对时长、本地 `HH:MM` 自动顺延次日、或 ISO-8601）。 |
+| `/help` / `/commands` | 分组查看全部可用指令、别名、参数用法及当前语音开关状态。 |
 
 ### 核心 HTTP / MCP 与工具契约
 

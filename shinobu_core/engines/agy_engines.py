@@ -17,7 +17,7 @@ import threading
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Iterator, Sequence
+from typing import Any, Iterator, Mapping, Sequence
 
 from shinobu_core.protocol.engine import ToolSpec, TurnChunk, TurnRequest
 
@@ -830,6 +830,9 @@ class AgyCliEngine:
         session_map_path: str | None = None,
         timeout: float = 120.0,
         extra_args: Sequence[str] = (),
+        add_dirs: Sequence[str | Path] = (),
+        skip_permissions: bool = False,
+        settings: str | Mapping[str, Any] | None = None,
         name: str = "agy_cli",
         max_retries: int = 2,
         retry_backoff_sec: float = 0.8,
@@ -848,6 +851,25 @@ class AgyCliEngine:
         )
         self.timeout: float = float(timeout)
         self.extra_args: tuple[str, ...] = tuple(extra_args)
+        normalized_add_dirs: list[str] = []
+        seen_add_dirs: set[str] = set()
+        for raw_dir in add_dirs or ():
+            item = str(raw_dir).strip()
+            if item and item not in seen_add_dirs:
+                seen_add_dirs.add(item)
+                normalized_add_dirs.append(item)
+        self.add_dirs: tuple[str, ...] = tuple(normalized_add_dirs)
+        self.skip_permissions: bool = bool(skip_permissions)
+        if settings is None:
+            self.settings: str | None = None
+        elif isinstance(settings, Mapping):
+            self.settings = json.dumps(
+                dict(settings),
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
+        else:
+            self.settings = str(settings).strip() or None
         self.max_retries: int = max(0, int(max_retries))
         self.retry_backoff_sec: float = max(0.0, float(retry_backoff_sec))
         self._session_lock = threading.Lock()
@@ -1032,6 +1054,12 @@ class AgyCliEngine:
             cmd.extend(["--effort", self.effort])
         if self.agent_mode:
             cmd.extend(["--mode", self.agent_mode])
+        for extra_dir in self.add_dirs:
+            cmd.extend(["--add-dir", extra_dir])
+        if self.skip_permissions:
+            cmd.append("--dangerously-skip-permissions")
+        if self.settings:
+            cmd.extend(["--settings", self.settings])
         if saved_conv_id:
             cmd.extend(["--conversation", saved_conv_id])
         if self.extra_args:
@@ -1057,11 +1085,25 @@ class AgyCliEngine:
             cmd.extend(["--effort", self.effort])
         if self.agent_mode:
             cmd.extend(["--mode", self.agent_mode])
+        for extra_dir in self.add_dirs:
+            cmd.extend(["--add-dir", extra_dir])
+        if self.skip_permissions:
+            cmd.append("--dangerously-skip-permissions")
+        if self.settings:
+            cmd.extend(["--settings", self.settings])
         if saved_conv_id:
             cmd.extend(["--conversation", saved_conv_id])
         if self.extra_args:
             cmd.extend(self.extra_args)
         return cmd
+
+    @staticmethod
+    def _popen_platform_kwargs() -> dict[str, Any]:
+        if os.name == "nt":
+            creationflags = int(getattr(subprocess, "CREATE_NO_WINDOW", 0) or 0)
+            if creationflags:
+                return {"creationflags": creationflags}
+        return {}
 
     @staticmethod
     def _start_stderr_drainer(
@@ -1220,6 +1262,7 @@ class AgyCliEngine:
             errors="replace",
             bufsize=1,
             cwd=self.cwd,
+            **self._popen_platform_kwargs(),
         )
         stderr_buf, stderr_thread = self._start_stderr_drainer(new_proc)
         has_persisted = bool(saved_conv_id)
@@ -1348,6 +1391,7 @@ class AgyCliEngine:
             encoding="utf-8",
             errors="replace",
             cwd=self.cwd,
+            **self._popen_platform_kwargs(),
         )
 
         usage_holder: dict[str, Any] = {"usage": None}

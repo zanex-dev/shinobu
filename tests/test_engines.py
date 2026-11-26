@@ -1912,6 +1912,100 @@ class TestAgyCliEngine(unittest.TestCase):
             self.assertEqual(cmd[cmd.index("--mode") + 1], "fast")
             self.assertIn("--no-color", cmd)
 
+    def test_add_dirs_skip_permissions_settings_flags_and_windows_no_window(self) -> None:
+        import shinobu_core.engines.agy_engines as agy_mod
+
+        # 1. One-shot command flags + Mapping settings compact JSON + Windows CREATE_NO_WINDOW
+        lines = [
+            json.dumps({"event": "step_update", "step_update": {"text_delta": "ok"}}) + "\n",
+            json.dumps({"event": "result", "result": {"status": "SUCCESS"}}) + "\n",
+        ]
+        with (
+            mock.patch("shutil.which", return_value="/opt/agy/bin/agy"),
+            mock.patch.object(agy_mod.os, "name", "nt"),
+            mock.patch.object(agy_mod.subprocess, "CREATE_NO_WINDOW", 0x08000000, create=True),
+            mock.patch("subprocess.Popen", return_value=_FakePopenProcess(lines, returncode=0)) as popen_mock,
+        ):
+            engine = AgyCliEngine(
+                binary="agy",
+                add_dirs=("/opt/extra_a", Path("/opt/extra_b"), "/opt/extra_a", "   "),
+                skip_permissions=True,
+                settings={"toolPermission": "allow", "allowNonWorkspaceAccess": True},
+                extra_args=("--tail",),
+            )
+            chunks = list(engine.stream_turn(TurnRequest(episode_id="ep-newflags", system_prefix="sys", user_text="hi")))
+            self.assertEqual("".join(c.delta for c in chunks), "ok")
+            cmd = popen_mock.call_args.args[0]
+            add_dir_values = [cmd[i + 1] for i, tok in enumerate(cmd) if tok == "--add-dir"]
+            self.assertEqual(add_dir_values, ["/opt/extra_a", str(Path("/opt/extra_b"))])
+            self.assertIn("--dangerously-skip-permissions", cmd)
+            self.assertIn("--settings", cmd)
+            self.assertEqual(
+                cmd[cmd.index("--settings") + 1],
+                '{"toolPermission":"allow","allowNonWorkspaceAccess":true}',
+            )
+            self.assertEqual(cmd[-1], "--tail")
+            self.assertEqual(popen_mock.call_args.kwargs.get("creationflags"), 0x08000000)
+
+        # 2. Persistent mode flags + string settings + Windows CREATE_NO_WINDOW
+        persistent_proc = self._make_persistent_proc(
+            [
+                [
+                    json.dumps({"event": "step_update", "step_update": {"text_delta": "p-ok"}}) + "\n",
+                    json.dumps({"event": "result", "result": {"status": "SUCCESS"}}) + "\n",
+                ]
+            ]
+        )
+        with (
+            mock.patch("shutil.which", return_value="/opt/agy/bin/agy"),
+            mock.patch.object(agy_mod.os, "name", "nt"),
+            mock.patch.object(agy_mod.subprocess, "CREATE_NO_WINDOW", 0x08000000, create=True),
+            mock.patch("subprocess.Popen", return_value=persistent_proc) as popen_persist_mock,
+        ):
+            p_engine = AgyCliEngine(
+                binary="agy",
+                persistent=True,
+                add_dirs=("/opt/p_dir",),
+                skip_permissions=True,
+                settings="  /opt/custom_settings.json  ",
+                timeout=5.0,
+            )
+            try:
+                p_chunks = list(
+                    p_engine.stream_turn(TurnRequest(episode_id="ep-pflags", system_prefix="sys", user_text="hi"))
+                )
+                self.assertEqual("".join(c.delta for c in p_chunks), "p-ok")
+                p_cmd = popen_persist_mock.call_args.args[0]
+                self.assertIn("--add-dir", p_cmd)
+                self.assertEqual(p_cmd[p_cmd.index("--add-dir") + 1], "/opt/p_dir")
+                self.assertIn("--dangerously-skip-permissions", p_cmd)
+                self.assertIn("--settings", p_cmd)
+                self.assertEqual(p_cmd[p_cmd.index("--settings") + 1], "/opt/custom_settings.json")
+                self.assertEqual(popen_persist_mock.call_args.kwargs.get("creationflags"), 0x08000000)
+            finally:
+                p_engine.close()
+
+        # 3. Non-Windows platform or zero CREATE_NO_WINDOW omits creationflags
+        with (
+            mock.patch("shutil.which", return_value="/opt/agy/bin/agy"),
+            mock.patch.object(agy_mod, "_augmented_agy_path", return_value=""),
+            mock.patch.object(agy_mod.os, "name", "posix"),
+            mock.patch("subprocess.Popen", return_value=_FakePopenProcess(lines, returncode=0)) as popen_posix_mock,
+        ):
+            posix_engine = AgyCliEngine(binary="agy")
+            list(posix_engine.stream_turn(TurnRequest(episode_id="ep-posix", system_prefix="sys", user_text="hi")))
+            self.assertNotIn("creationflags", popen_posix_mock.call_args.kwargs)
+
+        with (
+            mock.patch("shutil.which", return_value="/opt/agy/bin/agy"),
+            mock.patch.object(agy_mod.os, "name", "nt"),
+            mock.patch.object(agy_mod.subprocess, "CREATE_NO_WINDOW", 0, create=True),
+            mock.patch("subprocess.Popen", return_value=_FakePopenProcess(lines, returncode=0)) as popen_zero_mock,
+        ):
+            zero_flag_engine = AgyCliEngine(binary="agy")
+            list(zero_flag_engine.stream_turn(TurnRequest(episode_id="ep-zero", system_prefix="sys", user_text="hi")))
+            self.assertNotIn("creationflags", popen_zero_mock.call_args.kwargs)
+
     def test_persistent_multiturn_reuses_single_process_and_keeps_complete_json_isolated(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             session_map = Path(tmpdir) / "persistent_sessions.json"

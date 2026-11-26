@@ -442,6 +442,7 @@ class TelegramBotBridge:
         {"command": "voice", "description": "开关语音回复"},
         {"command": "nodes", "description": "查看在线边缘/算力节点"},
         {"command": "remind", "description": "查看或新建定时提醒"},
+        {"command": "help", "description": "查看所有可用指令与用法"},
     )
 
     def __init__(
@@ -1701,6 +1702,40 @@ class TelegramBotBridge:
             "reply": reply,
         }
 
+    def _handle_help_command(self) -> dict[str, Any]:
+        with self._state_lock:
+            voice_state = "开启" if self._voice_enabled else "关闭"
+        reply = "\n".join(
+            [
+                "📖 Shinobu Telegram 指令速查",
+                "",
+                "💬 对话与记忆",
+                "• /session（别名 /sessions、/archive）— 对话管理与归档面板",
+                "• /new — 秒开新对话（快速归档旧对话）",
+                "• /sleep — 整理记忆并归档当前对话",
+                "",
+                "🧠 大脑与思考",
+                "• /brain [cloud|hybrid|local]（别名 /mode）— 查看或切换推理引擎",
+                "• /think [off|low|medium|high]（别名 /effort）— 查看或调整思考深度",
+                "",
+                "⏰ 提醒与语音",
+                "• /remind [10m|2h|HH:MM|ISO 内容]（别名 /reminders）— 查看待触发提醒或新建定时提醒",
+                f"• /voice [on|off] — 开关语音回复（当前：{voice_state}）",
+                "",
+                "📡 运维与帮助",
+                "• /status — 查看系统、活跃引擎与待审批状态",
+                "• /nodes — 查看在线边缘 / 算力节点",
+                "• /help（别名 /commands）— 查看全部可用指令与用法",
+            ]
+        )
+        self.push_text(reply)
+        return {
+            "allowed": True,
+            "handled": True,
+            "action": "command_help",
+            "reply": reply,
+        }
+
     @staticmethod
     def _format_sleep_result(target: Any) -> str:
         def _get(obj: Any, key: str) -> Any:
@@ -2271,6 +2306,9 @@ class TelegramBotBridge:
 
         if cmd in ("/remind", "/reminders"):
             return self._handle_remind_command(args)
+
+        if cmd in ("/help", "/commands"):
+            return self._handle_help_command()
 
         typing_stop: threading.Event | None = None
         typing_thread: threading.Thread | None = None

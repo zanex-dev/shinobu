@@ -27,7 +27,7 @@ import sqlite3
 import sys
 import threading
 import time
-from typing import Any, Sequence
+from typing import Any, Callable, Sequence
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -264,16 +264,26 @@ def _parse_optional_bool(raw: str) -> bool | None:
 def _build_agy_cli_kwargs(
     kernel: ShinobuKernel,
     *,
+    cwd: str | Path | None = None,
     effort: str | None = None,
     agent_mode: str | None = None,
     persistent: bool | None = None,
+    add_dirs: Sequence[str | Path] | None = None,
+    skip_permissions: bool | None = None,
+    settings: str | dict[str, Any] | None = None,
     default_effort: str = "",
     default_persistent: bool | None = None,
 ) -> dict[str, object]:
     runtime_dir = (kernel.home.expanduser().resolve() / "runtime")
-    cwd = (runtime_dir / "agy_workspace").resolve()
+    env_cwd = os.environ.get("SHINOBU_AGY_CWD", "").strip()
+    if cwd is not None and str(cwd).strip():
+        resolved_cwd = Path(cwd).expanduser().resolve()
+    elif env_cwd:
+        resolved_cwd = Path(env_cwd).expanduser().resolve()
+    else:
+        resolved_cwd = (runtime_dir / "agy_workspace").resolve()
     session_map_path = (runtime_dir / "agy_cli_sessions.json").resolve()
-    cwd.mkdir(parents=True, exist_ok=True)
+    resolved_cwd.mkdir(parents=True, exist_ok=True)
     session_map_path.parent.mkdir(parents=True, exist_ok=True)
 
     binary = os.environ.get("SHINOBU_AGY_BIN", "").strip() or "agy"
@@ -297,9 +307,40 @@ def _build_agy_cli_kwargs(
     else:
         eff_persistent = env_persistent if env_persistent is not None else default_persistent
 
+    raw_add_dirs: list[str | Path] = []
+    env_add_dirs = os.environ.get("SHINOBU_AGY_ADD_DIRS", "")
+    if env_add_dirs:
+        raw_add_dirs.extend(env_add_dirs.split(os.pathsep))
+    if add_dirs:
+        raw_add_dirs.extend(add_dirs)
+    merged_add_dirs: list[str] = []
+    seen_add_dirs: set[str] = set()
+    for raw_dir in raw_add_dirs:
+        text = str(raw_dir).strip()
+        if not text:
+            continue
+        resolved_dir = str(Path(text).expanduser().resolve())
+        norm_key = os.path.normcase(resolved_dir)
+        if norm_key not in seen_add_dirs:
+            seen_add_dirs.add(norm_key)
+            merged_add_dirs.append(resolved_dir)
+
+    env_skip_permissions = _parse_optional_bool(
+        os.environ.get("SHINOBU_AGY_SKIP_PERMISSIONS", "")
+    )
+    if skip_permissions is not None:
+        eff_skip_permissions = bool(skip_permissions)
+    else:
+        eff_skip_permissions = bool(env_skip_permissions) if env_skip_permissions is not None else False
+
+    if settings is not None:
+        eff_settings: Any = settings.strip() if isinstance(settings, str) else settings
+    else:
+        eff_settings = os.environ.get("SHINOBU_AGY_SETTINGS", "").strip() or None
+
     out: dict[str, object] = {
         "binary": binary,
-        "cwd": cwd,
+        "cwd": resolved_cwd,
         "session_map_path": session_map_path,
     }
     if model:
@@ -310,6 +351,15 @@ def _build_agy_cli_kwargs(
         out["agent_mode"] = eff_mode
     if eff_persistent is not None:
         out["persistent"] = eff_persistent
+    if merged_add_dirs:
+        out["add_dirs"] = tuple(merged_add_dirs)
+    if eff_skip_permissions:
+        out["skip_permissions"] = True
+    if isinstance(eff_settings, str):
+        if eff_settings:
+            out["settings"] = eff_settings
+    elif eff_settings is not None:
+        out["settings"] = eff_settings
     return out
 
 
@@ -1401,7 +1451,11 @@ def build_edge_node(
     effort: str | None = None,
     agy_mode: str | None = None,
     persistent: bool = True,
+    agy_add_dirs: Sequence[Path | str] | None = None,
+    agy_skip_permissions: bool | None = None,
     presence_enabled: bool | None = None,
+    on_error: Callable[[str, Exception], None] | None = None,
+    on_registered: Callable[[bool], None] | None = None,
 ) -> tuple[EdgeNodeServer, EdgeNodeClient]:
     """Assemble T06 `EdgeNodeServer` + `EdgeNodeClient` for home-PC edge agent."""
     resolved_cloud_url = cloud_url.strip().rstrip("/")
@@ -1426,6 +1480,8 @@ def build_edge_node(
             effort=effort,
             agent_mode=agy_mode,
             persistent=persistent,
+            add_dirs=agy_add_dirs,
+            skip_permissions=agy_skip_permissions,
             default_effort="low",
             default_persistent=True,
         )
@@ -1471,6 +1527,8 @@ def build_edge_node(
         node_token=effective_node_token,
         capabilities=capabilities,
         heartbeat_sec=float(heartbeat_sec),
+        on_error=on_error,
+        on_registered=on_registered,
         presence_enabled=effective_presence,
     )
     return server, client
@@ -1496,23 +1554,58 @@ def _cmd_node(args: argparse.Namespace, kernel: ShinobuKernel) -> int:
     port = int(getattr(args, "port", 18792))
     advertise_url = getattr(args, "advertise_url", None)
 
+    worker_id_value = (getattr(args, "worker_id", None) or "home_pc").strip() or "home_pc"
+    caller_thread = threading.current_thread()
+    log_lock = threading.Lock()
+    last_error_logged: dict[tuple[str, str, str], float] = {}
+    in_initial_start = True
+
+    def _on_node_error(stage: str, exc: Exception) -> None:
+        err_key = (stage, type(exc).__name__, str(exc))
+        now = time.monotonic()
+        with log_lock:
+            prev = last_error_logged.get(err_key)
+            if prev is not None and (now - prev) < 60.0:
+                return
+            last_error_logged[err_key] = now
+        print(
+            f"[shinobu node] {stage} failed ({cloud_url}): {exc}",
+            file=sys.stderr,
+        )
+        sys.stderr.flush()
+
+    def _on_node_registered(is_reregister: bool) -> None:
+        with log_lock:
+            last_error_logged.clear()
+            suppress = in_initial_start and threading.current_thread() is caller_thread
+        if suppress:
+            return
+        status_verb = "re-registered with" if is_reregister else "registered with"
+        print(f"Shinobu edge node '{worker_id_value}' {status_verb} {cloud_url}")
+        sys.stdout.flush()
+
+    heartbeat_sec = float(getattr(args, "heartbeat_sec", 15.0))
     server, client = build_edge_node(
         kernel,
         cloud_url=cloud_url,
         cloud_token=cloud_token,
         node_token=getattr(args, "node_token", None),
-        worker_id=getattr(args, "worker_id", None) or "home_pc",
+        worker_id=worker_id_value,
         bind_host=bind_host,
         port=port,
         advertise_url=advertise_url,
         engine_name=getattr(args, "engine", None),
         allowed_roots=getattr(args, "allowed_root", None),
         airi_bubble_url=getattr(args, "airi_bubble_url", None) or "",
-        heartbeat_sec=float(getattr(args, "heartbeat_sec", 15.0)),
+        heartbeat_sec=heartbeat_sec,
         effort=getattr(args, "effort", None),
         agy_mode=getattr(args, "agy_mode", None),
         persistent=not bool(getattr(args, "no_persistent", False)),
+        agy_add_dirs=getattr(args, "agy_add_dir", None),
+        agy_skip_permissions=True if bool(getattr(args, "agy_skip_permissions", False)) else None,
         presence_enabled=False if bool(getattr(args, "no_presence", False)) else None,
+        on_error=_on_node_error,
+        on_registered=_on_node_registered,
     )
 
     stop_event = threading.Event()
@@ -1536,11 +1629,22 @@ def _cmd_node(args: argparse.Namespace, kernel: ShinobuKernel) -> int:
             )
             if isinstance(actual_url, str) and actual_url.strip():
                 client.advertise_url = actual_url.strip()
-        client.start()
-        print(
-            f"Shinobu edge node '{client.worker_id}' listening on {client.advertise_url} "
-            f"(registered with {cloud_url})"
-        )
+        try:
+            registered = client.start()
+        finally:
+            with log_lock:
+                in_initial_start = False
+        if registered:
+            print(
+                f"Shinobu edge node '{client.worker_id}' listening on {client.advertise_url} "
+                f"(registered with {cloud_url})"
+            )
+        else:
+            retry_sec = float(getattr(client, "heartbeat_sec", heartbeat_sec))
+            print(
+                f"Shinobu edge node '{client.worker_id}' listening on {client.advertise_url} "
+                f"(waiting for cloud {cloud_url}; retrying every {retry_sec:g}s)"
+            )
         sys.stdout.flush()
         while not stop_event.is_set():
             stop_event.wait(timeout=0.5)
@@ -2234,6 +2338,57 @@ def _find_spec_safe(module_name: str) -> Any | None:
         return None
 
 
+def _inspect_agy_cli_settings() -> dict[str, Any]:
+    """Collect a read-only, secret-free summary of `~/.gemini/antigravity-cli/settings.json`."""
+    fallback: dict[str, Any] = {
+        "settings_present": False,
+        "tool_permission": None,
+        "allow_non_workspace_access": None,
+    }
+    try:
+        settings_path = Path.home() / ".gemini" / "antigravity-cli" / "settings.json"
+        if not settings_path.is_file():
+            return fallback
+        raw = json.loads(settings_path.read_text(encoding="utf-8"))
+    except Exception:
+        return fallback
+    if not isinstance(raw, dict):
+        return {
+            "settings_present": True,
+            "tool_permission": None,
+            "allow_non_workspace_access": None,
+        }
+
+    perms_block = raw.get("permissions") if isinstance(raw.get("permissions"), dict) else {}
+    raw_tool_perm = raw.get("toolPermission")
+    if raw_tool_perm is None:
+        raw_tool_perm = raw.get("tool_permission")
+    if raw_tool_perm is None:
+        raw_tool_perm = perms_block.get("toolPermission")
+    if raw_tool_perm is None:
+        raw_tool_perm = perms_block.get("tool_permission")
+    tool_permission = (
+        raw_tool_perm.strip()
+        if isinstance(raw_tool_perm, str) and raw_tool_perm.strip()
+        else None
+    )
+
+    raw_non_ws = raw.get("allowNonWorkspaceAccess")
+    if raw_non_ws is None:
+        raw_non_ws = raw.get("allow_non_workspace_access")
+    if raw_non_ws is None:
+        raw_non_ws = perms_block.get("allowNonWorkspaceAccess")
+    if raw_non_ws is None:
+        raw_non_ws = perms_block.get("allow_non_workspace_access")
+    allow_non_workspace_access = raw_non_ws if isinstance(raw_non_ws, bool) else None
+
+    return {
+        "settings_present": True,
+        "tool_permission": tool_permission,
+        "allow_non_workspace_access": allow_non_workspace_access,
+    }
+
+
 def collect_doctor_report(kernel: ShinobuKernel) -> dict[str, Any]:
     """Collect a secret-free diagnostic report for native Antigravity drivers and runtime health."""
     home = kernel.home.expanduser().resolve()
@@ -2251,6 +2406,7 @@ def collect_doctor_report(kernel: ShinobuKernel) -> dict[str, Any]:
     agy_bin_name = os.environ.get("SHINOBU_AGY_BIN", "").strip() or "agy"
     agy_bin_path = shutil.which(agy_bin_name, path=_augmented_agy_path())
     cli_available = agy_bin_path is not None
+    agy_cli_settings = _inspect_agy_cli_settings()
 
     shinobu_api_key_present = bool(os.environ.get("SHINOBU_API_KEY", "").strip())
     gemini_api_key_present = bool(os.environ.get("GEMINI_API_KEY", "").strip())
@@ -2312,6 +2468,9 @@ def collect_doctor_report(kernel: ShinobuKernel) -> dict[str, Any]:
                 "binary": agy_bin_name,
                 "resolved_path": agy_bin_path,
                 "model": model,
+                "settings_present": agy_cli_settings["settings_present"],
+                "tool_permission": agy_cli_settings["tool_permission"],
+                "allow_non_workspace_access": agy_cli_settings["allow_non_workspace_access"],
             },
         },
         "credentials": {
@@ -2752,6 +2911,18 @@ def build_parser(kernel: ShinobuKernel | None = None) -> argparse.ArgumentParser
         action="store_true",
         default=False,
         help="Disable persistent agy_cli stream-json worker process (or set SHINOBU_AGY_PERSISTENT=0).",
+    )
+    p_node.add_argument(
+        "--agy-add-dir",
+        action="append",
+        default=None,
+        help="Additional workspace directory passed to local agy_cli via --add-dir (repeatable; merges with $SHINOBU_AGY_ADD_DIRS).",
+    )
+    p_node.add_argument(
+        "--agy-skip-permissions",
+        action="store_true",
+        default=False,
+        help="Pass --dangerously-skip-permissions to local agy_cli (or set SHINOBU_AGY_SKIP_PERMISSIONS=1).",
     )
     p_node.add_argument(
         "--no-presence",

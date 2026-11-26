@@ -382,6 +382,142 @@ class TestCliAndDualGate(unittest.TestCase):
             assert isinstance(kw_default, dict)
             self.assertEqual(kw_default["binary"], "agy")
 
+    def test_build_agy_cli_kwargs_env_and_node_flags_isolation(self) -> None:
+        """_build_agy_cli_kwargs wires SHINOBU_AGY_* env vars and keeps allowed_roots out of add_dirs."""
+        from shinobu_core.server.cli import _build_agy_cli_kwargs, build_edge_node, build_parser
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp).resolve()
+            home = tmp_path / "home"
+            custom_cwd = tmp_path / "custom_cwd"
+            dir_a = tmp_path / "dir_a"
+            dir_b = tmp_path / "dir_b"
+            dir_root = tmp_path / "allowed_only"
+            for d in (dir_a, dir_b, dir_root):
+                d.mkdir(parents=True, exist_ok=True)
+            kernel = ShinobuKernel(home=home)
+
+            env_patch = {
+                "SHINOBU_AGY_CWD": str(custom_cwd),
+                "SHINOBU_AGY_ADD_DIRS": os.pathsep.join([str(dir_a), str(dir_b), str(dir_a), ""]),
+                "SHINOBU_AGY_SKIP_PERMISSIONS": "1",
+                "SHINOBU_AGY_SETTINGS": '{"toolPermission":"allow"}',
+            }
+            with mock.patch.dict(os.environ, env_patch, clear=False):
+                kw = _build_agy_cli_kwargs(kernel, add_dirs=[dir_b, tmp_path / "dir_c"])
+
+            self.assertEqual(Path(kw["cwd"]), custom_cwd.resolve())
+            self.assertTrue(custom_cwd.is_dir())
+            self.assertEqual(
+                kw["add_dirs"],
+                (
+                    str(dir_a.resolve()),
+                    str(dir_b.resolve()),
+                    str((tmp_path / "dir_c").resolve()),
+                ),
+            )
+            self.assertTrue(kw["skip_permissions"])
+            self.assertEqual(kw["settings"], '{"toolPermission":"allow"}')
+
+            # build_edge_node must NOT leak allowed_roots into agy_cli add_dirs
+            clean_env = {
+                "SHINOBU_AGY_CWD": "",
+                "SHINOBU_AGY_ADD_DIRS": "",
+                "SHINOBU_AGY_SKIP_PERMISSIONS": "",
+                "SHINOBU_AGY_SETTINGS": "",
+            }
+            captured_node_engine: dict[str, object] = {}
+
+            def _spy_node_create(name: str, **kwargs):
+                from shinobu_core.engines import create_engine as real_create
+
+                eng = real_create(name, **kwargs)
+                captured_node_engine["kwargs"] = kwargs
+                captured_node_engine["engine"] = eng
+                return eng
+
+            with (
+                mock.patch.dict(os.environ, clean_env, clear=False),
+                mock.patch("shinobu_core.server.cli.create_engine", side_effect=_spy_node_create),
+            ):
+                build_edge_node(
+                    kernel,
+                    cloud_url="http://127.0.0.1:18790",
+                    engine_name="agy_cli",
+                    allowed_roots=[dir_root],
+                    agy_add_dirs=[dir_a],
+                    agy_skip_permissions=True,
+                )
+            node_engine = captured_node_engine["engine"]
+            self.assertEqual(getattr(node_engine, "add_dirs"), (str(dir_a.resolve()),))
+            self.assertNotIn(str(dir_root.resolve()), getattr(node_engine, "add_dirs"))
+            self.assertTrue(getattr(node_engine, "skip_permissions"))
+
+            # CLI parser accepts repeatable --agy-add-dir and --agy-skip-permissions
+            parsed = build_parser().parse_args(
+                [
+                    "node",
+                    "--cloud-url",
+                    "http://127.0.0.1:18790",
+                    "--agy-add-dir",
+                    str(dir_a),
+                    "--agy-add-dir",
+                    str(dir_b),
+                    "--agy-skip-permissions",
+                ]
+            )
+            self.assertEqual(parsed.agy_add_dir, [str(dir_a), str(dir_b)])
+            self.assertTrue(parsed.agy_skip_permissions)
+
+    def test_doctor_agy_cli_settings_diagnosis_and_fallback(self) -> None:
+        """doctor reports read-only agy_cli settings fields without leaking raw secrets and falls back safely."""
+        from shinobu_core.server.cli import collect_doctor_report
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp).resolve()
+            home = tmp_path / "shinobu_home"
+            fake_user_home = tmp_path / "fake_user_home"
+            fake_user_home.mkdir(parents=True, exist_ok=True)
+            kernel = ShinobuKernel(home=home)
+
+            # 1. Missing settings.json -> False / None / None
+            with mock.patch("shinobu_core.server.cli.Path.home", return_value=fake_user_home):
+                rep_missing = collect_doctor_report(kernel)
+            cli_info_missing = rep_missing["drivers"]["agy_cli"]
+            self.assertFalse(cli_info_missing["settings_present"])
+            self.assertIsNone(cli_info_missing["tool_permission"])
+            self.assertIsNone(cli_info_missing["allow_non_workspace_access"])
+
+            # 2. Valid settings.json with extra secret field -> extracts only safe flags, zero secret leak
+            settings_file = fake_user_home / ".gemini" / "antigravity-cli" / "settings.json"
+            settings_file.parent.mkdir(parents=True, exist_ok=True)
+            settings_file.write_text(
+                json.dumps(
+                    {
+                        "toolPermission": "allow",
+                        "allowNonWorkspaceAccess": True,
+                        "apiKey": "sk-settings-secret-must-not-leak",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with mock.patch("shinobu_core.server.cli.Path.home", return_value=fake_user_home):
+                rep_ok = collect_doctor_report(kernel)
+            self.assertNotIn("sk-settings-secret-must-not-leak", json.dumps(rep_ok))
+            cli_info_ok = rep_ok["drivers"]["agy_cli"]
+            self.assertTrue(cli_info_ok["settings_present"])
+            self.assertEqual(cli_info_ok["tool_permission"], "allow")
+            self.assertTrue(cli_info_ok["allow_non_workspace_access"])
+
+            # 3. Corrupted settings.json -> degrades safely to False / None / None
+            settings_file.write_text("{not valid json", encoding="utf-8")
+            with mock.patch("shinobu_core.server.cli.Path.home", return_value=fake_user_home):
+                rep_bad = collect_doctor_report(kernel)
+            cli_info_bad = rep_bad["drivers"]["agy_cli"]
+            self.assertFalse(cli_info_bad["settings_present"])
+            self.assertIsNone(cli_info_bad["tool_permission"])
+            self.assertIsNone(cli_info_bad["allow_non_workspace_access"])
+
     def test_doctor_json_text_and_secret_redaction(self) -> None:
         """shinobu doctor diagnoses drivers/isolation/plugins and never leaks raw secrets."""
         with tempfile.TemporaryDirectory() as tmp:

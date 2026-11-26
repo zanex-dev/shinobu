@@ -882,6 +882,7 @@ class EdgeNodeClient:
         meta: Mapping[str, Any] | None = None,
         request_timeout_sec: float = 10.0,
         on_error: Callable[[str, Exception], None] | None = None,
+        on_registered: Callable[[bool], None] | None = None,
         presence_enabled: bool = True,
         presence_tracker: Any | None = None,
     ) -> None:
@@ -925,6 +926,7 @@ class EdgeNodeClient:
         self.meta: dict[str, Any] = dict(meta) if isinstance(meta, Mapping) else {}
         self.request_timeout_sec: float = req_timeout
         self._on_error = on_error
+        self._on_registered = on_registered
         self.presence_enabled: bool = bool(presence_enabled)
         if self.presence_enabled:
             if presence_tracker is not None:
@@ -940,6 +942,7 @@ class EdgeNodeClient:
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
         self._registered: bool = False
+        self._ever_registered: bool = False
 
     @property
     def is_running(self) -> bool:
@@ -996,8 +999,16 @@ class EdgeNodeClient:
             "meta": dict(self.meta),
         }
         _, data = self._request_json("POST", "/api/workers/register", payload)
+        should_notify = False
+        was_ever_registered = False
         with self._lock:
+            if not self._registered:
+                should_notify = True
+                was_ever_registered = self._ever_registered
             self._registered = True
+            self._ever_registered = True
+        if should_notify:
+            self._report_registered(was_ever_registered)
         return data
 
     def _collect_presence_meta(self) -> dict[str, Any] | None:
@@ -1026,15 +1037,26 @@ class EdgeNodeClient:
         try:
             _, data = self._request_json("POST", "/api/workers/heartbeat", payload)
             if data.get("ok") is False and data.get("found") is False:
+                with self._lock:
+                    self._registered = False
                 self.register()
                 return True
             with self._lock:
                 self._registered = True
+                self._ever_registered = True
             return True
         except urllib.error.HTTPError as exc:
             if exc.code == 404:
+                with self._lock:
+                    self._registered = False
                 self.register()
                 return True
+            with self._lock:
+                self._registered = False
+            raise
+        except Exception:
+            with self._lock:
+                self._registered = False
             raise
 
     def unregister(self) -> bool:
@@ -1055,6 +1077,13 @@ class EdgeNodeClient:
         if self._on_error is not None:
             try:
                 self._on_error(stage, exc)
+            except Exception:
+                pass
+
+    def _report_registered(self, is_reregister: bool) -> None:
+        if self._on_registered is not None:
+            try:
+                self._on_registered(is_reregister)
             except Exception:
                 pass
 

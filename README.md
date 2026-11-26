@@ -17,7 +17,7 @@
 </p>
 
 <p align="center">
-  <a href="README.md"><strong>English</strong></a> · <a href="README_ZH.md"><strong>简体中文</strong></a> · <a href="deploy/gcp_setup.md">GCP 7×24 Cloud Guide (ZH)</a> · <a href="CHANGELOG.md">Changelog</a>
+  <a href="README.md"><strong>English</strong></a> · <a href="README_ZH.md"><strong>简体中文</strong></a> · <a href="AGENTS.md">Architecture & Agent Map</a> · <a href="deploy/gcp_setup.md">GCP 7×24 Cloud Guide (ZH)</a> · <a href="CHANGELOG.md">Changelog</a>
 </p>
 
 ---
@@ -202,11 +202,17 @@ When you are ready for an always-on companion reachable from your phone and capa
 
 | Command | Description |
 |---|---|
+| `/session` / `/sessions` / `/archive` | Open the conversation management and archive panel. |
+| `/new` | Start a new conversation immediately (quickly archives the current one). |
+| `/sleep` | Consolidate memories and archive the current conversation. |
+| `/brain [cloud\|hybrid\|local]` / `/mode` | Inspect or switch the reasoning engine (`cloud`, `hybrid`, or `local`). |
+| `/think [off\|low\|medium\|high]` / `/effort` | Inspect or adjust thinking effort (`off`, `low`, `medium`, or `high`). |
 | `/status` | Inspect runtime health, active engine, and pending approval count. |
 | `/nodes` | List currently online local PC / Colab GPU edge nodes. |
-| `/voice on` / `/voice off` | Toggle on-demand voice note replies. |
+| `/voice [on\|off]` | Check or toggle on-demand voice note replies. |
 | `/remind` / `/reminders` | List pending reminders from the SQLite `timemap` schedule table. |
 | `/remind <10m\|2h\|HH:MM\|ISO> <text>` | Schedule a new reminder (relative duration, local `HH:MM`, or ISO-8601). |
+| `/help` / `/commands` | Show the grouped command quick reference, aliases, usage examples, and current voice toggle state. |
 
 ### Core HTTP / MCP & Agent Tool Contracts
 

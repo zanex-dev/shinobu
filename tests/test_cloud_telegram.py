@@ -425,6 +425,71 @@ class TestTelegramIsolatedBridge(unittest.TestCase):
         # Built-in commands never enter on_chat
         self.assertEqual(self.chat_inputs, [])
 
+    def test_builtin_help_command_and_aliases(self) -> None:
+        # 1. /help default state (voice off)
+        self.server.clear_requests()
+        res_help = self.bridge.handle_update(self._private_msg(text="/help"))
+        self.assertTrue(res_help["allowed"])
+        self.assertTrue(res_help["handled"])
+        self.assertEqual(res_help["action"], "command_help")
+        reply = res_help["reply"]
+        for expected in (
+            "对话与记忆",
+            "大脑与思考",
+            "提醒与语音",
+            "运维与帮助",
+            "/session",
+            "/sessions",
+            "/archive",
+            "/new",
+            "/sleep",
+            "/brain",
+            "/mode",
+            "/think",
+            "/effort",
+            "/remind",
+            "/reminders",
+            "/voice",
+            "/status",
+            "/nodes",
+            "/help",
+            "/commands",
+            "当前：关闭",
+        ):
+            self.assertIn(expected, reply)
+        send_reqs = [r for r in self.server.requests if r.get("method") == "sendMessage"]
+        self.assertEqual(len(send_reqs), 1)
+        self.assertIn("/help", send_reqs[0]["json"]["text"])
+
+        # 2. /help@ShinobuCloudBot reflects toggled voice state (voice on)
+        self.bridge.handle_update(self._private_msg(text="/voice on"))
+        res_help_mention = self.bridge.handle_update(
+            self._private_msg(text="/help@ShinobuCloudBot")
+        )
+        self.assertTrue(res_help_mention["allowed"])
+        self.assertTrue(res_help_mention["handled"])
+        self.assertEqual(res_help_mention["action"], "command_help")
+        self.assertIn("当前：开启", res_help_mention["reply"])
+
+        # 3. /commands alias
+        res_commands = self.bridge.handle_update(self._private_msg(text="/commands"))
+        self.assertTrue(res_commands["allowed"])
+        self.assertTrue(res_commands["handled"])
+        self.assertEqual(res_commands["action"], "command_help")
+        self.assertIn("/help", res_commands["reply"])
+
+        # 4. Non-whitelisted user sending /help is silently dropped
+        self.server.clear_requests()
+        res_stranger = self.bridge.handle_update(
+            self._private_msg(chat_id=999999999, text="/help")
+        )
+        self.assertFalse(res_stranger["allowed"])
+        self.assertFalse(res_stranger["handled"])
+        self.assertEqual(self.server.requests, [])
+
+        # Built-in /help never triggers on_chat
+        self.assertEqual(self.chat_inputs, [])
+
     def test_brain_command_and_inline_keyboard_switch(self) -> None:
         state: dict[str, Any] = {
             "mode": "auto",
@@ -1368,7 +1433,7 @@ class TestTelegramIsolatedBridge(unittest.TestCase):
         methods_default = [r.get("method") for r in self.server.requests]
         self.assertNotIn("setMyCommands", methods_default)
 
-        # register_commands=True -> registers all 9 commands before polling
+        # register_commands=True -> registers all 10 commands before polling
         bridge_menu = TelegramBotBridge(
             bot_token=self.TOKEN,
             allowed_chat_id=self.OWNER_ID,
@@ -1388,7 +1453,7 @@ class TestTelegramIsolatedBridge(unittest.TestCase):
         registered = [c["command"] for c in set_cmds[0]["json"]["commands"]]
         self.assertEqual(
             registered,
-            ["session", "new", "sleep", "brain", "think", "status", "voice", "nodes", "remind"],
+            ["session", "new", "sleep", "brain", "think", "status", "voice", "nodes", "remind", "help"],
         )
 
         # /remind command behavior: list, <N>m, <N>h, HH:MM (same day & next day), ISO, invalid & disabled
