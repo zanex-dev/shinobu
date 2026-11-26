@@ -422,7 +422,7 @@ class ModelComplexityClassifier:
 
         deadline = time.monotonic() + self.api_timeout_sec
         token = self._resolve_bearer_token(self.api_timeout_sec)
-        remaining = max(0.05, deadline - time.monotonic())
+        remaining = min(self.api_timeout_sec, max(0.05, deadline - time.monotonic()))
 
         headers: dict[str, str] = {
             "Content-Type": "application/json",

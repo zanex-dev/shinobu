@@ -2026,6 +2026,8 @@ class TestAgyCliEngine(unittest.TestCase):
             json.dumps({"event": "step_update", "step_update": {"text_delta": "ok"}}) + "\n",
             json.dumps({"event": "result", "result": {"status": "SUCCESS"}}) + "\n",
         ]
+        extra_b_path = Path("/opt/extra_b")
+        expected_extra_b = str(extra_b_path)
         with (
             mock.patch("shutil.which", return_value="/opt/agy/bin/agy"),
             mock.patch.object(agy_mod.os, "name", "nt"),
@@ -2034,7 +2036,7 @@ class TestAgyCliEngine(unittest.TestCase):
         ):
             engine = AgyCliEngine(
                 binary="agy",
-                add_dirs=("/opt/extra_a", Path("/opt/extra_b"), "/opt/extra_a", "   "),
+                add_dirs=("/opt/extra_a", extra_b_path, "/opt/extra_a", "   "),
                 skip_permissions=True,
                 settings={"toolPermission": "allow", "allowNonWorkspaceAccess": True},
                 extra_args=("--tail",),
@@ -2043,7 +2045,7 @@ class TestAgyCliEngine(unittest.TestCase):
             self.assertEqual("".join(c.delta for c in chunks), "ok")
             cmd = popen_mock.call_args.args[0]
             add_dir_values = [cmd[i + 1] for i, tok in enumerate(cmd) if tok == "--add-dir"]
-            self.assertEqual(add_dir_values, ["/opt/extra_a", str(Path("/opt/extra_b"))])
+            self.assertEqual(add_dir_values, ["/opt/extra_a", expected_extra_b])
             self.assertIn("--dangerously-skip-permissions", cmd)
             self.assertIn("--settings", cmd)
             self.assertEqual(

@@ -6,6 +6,26 @@
 
 ---
 
+## [1.2.0] - 2026-11-26
+
+在保持核心零第三方依赖（`dependencies = []`）的前提下，引入双通道自适应思考深度分类器与窗口单向棘轮、30 分钟无活跃零 Token 自动归档、原生 `agy_cli` 隔离与权限增强，以及云边协同与跨平台 CI 稳定性打磨。
+
+### 新增与增强
+- **自适应思考深度分类器与窗口单向棘轮（`ModelComplexityClassifier`）**：
+  - 新增 `shinobu_core/runtime/classifier.py`：日常寒暄与单窗口已达高档上限时 `0ms` 直接短路；支持 OpenAI 兼容 API 与原生 `agy` 双后端延迟 EMA 动态择优及 `600ms` 超时 Fail-open 兜底。
+  - 引入单对话剧集（Episode）思考档位单向棘轮（只升不降）与工具调用续轮首轮档位复用机制，消除同窗频繁切档导致的 Prompt KV 缓存击穿。
+- **30 分钟空闲零 Token 自动归档与全链路单轮 `reasoning_effort` 透传**：
+  - 新增空闲归档水位（`SHINOBU_EPISODE_IDLE_ARCHIVE_SEC=1800`），超过 30 分钟无活跃交互时零 Token 自动归档旧剧集并开启新窗；切新窗或执行 `/think default` 自动清除手动锁定并恢复 `auto` 自适应模式。
+  - 打通 `Orchestrator`、`HybridEngine`、`EdgeNodeClient`、`OpenAICompatEngine` 与 `AgyCliEngine`/`AgySdkEngine` 全链路单轮 `reasoning_effort` 透传。
+- **原生 `agy_cli` 运行隔离、权限控制与自检增强**：
+  - `AgyCliEngine` 新增受控 `--add-dir` 额外目录挂载、`--settings` 独立配置注入、`--dangerously-skip-permissions` 免交互开关，以及 Windows `CREATE_NO_WINDOW` 子进程静默防黑框支持。
+  - `shinobu doctor` 新增原生 `agy` CLI 可用性、隔离参数与自适应分类器健康状态诊断项。
+- **云边协同打磨、多端交互升级与跨平台 CI 加固**：
+  - `EdgeNodeClient` 补齐诚实启动连接状态上报与断线重连回调；Telegram 新增分组 `/help`（`/commands`）指令速查菜单并支持 `/think default`；Web 记忆本补齐 `default` 自动思考档位按钮；新增仓库架构与模块导览 `AGENTS.md`。
+  - 加固分类器 API 超时上界夹紧及跨平台单测确定性（消除 `Path` mock 平台耦合与 `sleep` 时序抖动），307 项单测与双门禁在 9 矩阵 CI 全绿通过。
+
+---
+
 ## [1.1.0] - 2026-11-25
 
 在严守核心零第三方依赖（`dependencies = []`）的前提下，补齐语音网关、Colab GPU 语音工坊、社区前端联调、自定义差分立绘安装器与跨平台零依赖 CI。

@@ -6,6 +6,26 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ---
 
+## [1.2.0] - 2026-11-26
+
+Preserves the strict zero-dependency core (`dependencies = []`) while introducing the dual-backend adaptive thinking complexity classifier with per-episode monotonic ratchet, 30-minute zero-token idle auto-archiving, hardened `agy_cli` workspace/permission controls, and cloud-edge UX & CI refinements.
+
+### Added & Changed
+- **Adaptive Complexity Classifier & Per-Episode Monotonic Ratchet (`ModelComplexityClassifier`)**:
+  - Added `shinobu_core/runtime/classifier.py` with `0ms` short-circuiting for casual greetings or max-effort ceilings, dynamic latency-EMA selection across OpenAI-compatible API and native `agy` backends, and `600ms` fail-open protection.
+  - Enforced a monotonic upward-only effort ratchet within each conversation episode and reused first-turn effort across multi-step tool continuations to prevent Prompt KV-cache thrashing.
+- **30-Minute Zero-Token Idle Auto-Archive & End-to-End `reasoning_effort` Propagation**:
+  - Added automatic zero-token episode archiving after 30 minutes of inactivity (`SHINOBU_EPISODE_IDLE_ARCHIVE_SEC=1800`); opening a fresh episode or running `/think default` clears manual overrides and restores `auto` adaptive mode.
+  - Propagated per-turn `reasoning_effort` end-to-end across `Orchestrator`, `HybridEngine`, `EdgeNodeClient`, `OpenAICompatEngine`, and `AgyCliEngine`/`AgySdkEngine`.
+- **Native `agy_cli` Isolation, Permission Controls & Doctor Diagnostics**:
+  - Extended `AgyCliEngine` with `--add-dir` workspace mounts, `--settings` isolated config injection, opt-in `--dangerously-skip-permissions`, and Windows `CREATE_NO_WINDOW` background subprocess spawning.
+  - Expanded `shinobu doctor` to inspect native `agy` CLI availability, isolation flags, and complexity classifier health.
+- **Cloud-Edge Hardening, Surface UX Polish & Cross-Platform CI Stability**:
+  - Added honest startup state reporting and reconnect callbacks in `EdgeNodeClient`, grouped `/help` (`/commands`) menu and `/think default` support in Telegram, `default` auto-effort selector in the Web Console, and the repository module guide `AGENTS.md`.
+  - Tightened classifier API timeout upper-bound clamping and deterministic cross-platform unit tests (307 tests + Gate 1 & Gate 2 clean-room audits passing across the 9-matrix CI).
+
+---
+
 ## [1.1.0] - 2026-11-25
 
 Preserves the strict zero-dependency core (`dependencies = []`) while adding an opt-in local TTS gateway, Colab GPU voice notebooks, Project AIRI integration kit, custom avatar pack installer, and cross-platform zero-dependency CI.

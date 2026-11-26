@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  <a href="pyproject.toml"><img src="https://img.shields.io/badge/version-v1.0.0-be123c" alt="Version v1.0.0" /></a>
+  <a href="pyproject.toml"><img src="https://img.shields.io/badge/version-v1.2.0-be123c" alt="Version v1.2.0" /></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-PolyForm%20Noncommercial%201.0.0-e11d48.svg" alt="License: PolyForm Noncommercial 1.0.0" /></a>
   <a href="pyproject.toml"><img src="https://img.shields.io/badge/python-3.10%2B%20(0%20deps)-3776AB.svg" alt="Python 3.10+ (0 deps)" /></a>
   <img src="https://img.shields.io/badge/network-127.0.0.1%20%2F%20Tailscale-059669" alt="Loopback and Tailscale" />
@@ -60,13 +60,13 @@ grep -rnE "HTTPConnection|urlopen|subprocess|getFile|0\.0\.0\.0|shell=True" ./sh
 
 具体工程特性一览：
 
-1. **原生非反代 Google Antigravity 官方驱动（`agy_cli` / `agy_sdk`）+ 多引擎自由切换**：绝不采用逆向反代、抓包伪造或窃取 Token 的高危灰产方案，直接基于官方 `agy` CLI（持久化 `stream-json` 常驻进程、`shinobu node` 默认引擎）与官方 `google-antigravity` Python SDK（懒加载可选 `.[agy-sdk]`，支持 `gemini` / `openai_local` / `litert` 模式）驱动；全部运行目录与会话映射物理隔离在 `$SHINOBU_HOME/runtime/`，绝不污染你的主 Antigravity 工作区，同时兼容任意标准 `openai_compat`（云端 API / 本地 Ollama / vLLM）与 `--engine hybrid` 混动路由。
+1. **原生非反代 Google Antigravity 官方驱动（`agy_cli` / `agy_sdk`）+ 多引擎自由切换**：绝不采用逆向反代、抓包伪造或窃取 Token 的高危灰产方案，直接基于官方 `agy` CLI（持久化 `stream-json` 常驻进程、`shinobu node` 默认引擎，支持 `--add-dir` / `--settings` / `--dangerously-skip-permissions` 与 Windows 无黑框静默驻留）与官方 `google-antigravity` Python SDK（懒加载可选 `.[agy-sdk]`，支持 `gemini` / `openai_local` / `litert` 模式）驱动；全部运行目录与会话映射物理隔离在 `$SHINOBU_HOME/runtime/`，绝不污染你的主 Antigravity 工作区，同时兼容任意标准 `openai_compat`（云端 API / 本地 Ollama / vLLM）与 `--engine hybrid` 混动路由。
 2. **多端共享同一个“活体灵魂”，彻底告别静态人设卡**：一个持久运行的后台大脑 + 本地 SQLite 记忆库，同时驱动内置 Web 记忆本（`shinobu ui`）、透明悬浮桌宠（`shinobu pet`）、手机 Telegram（`shinobu telegram`）以及任何外部 OpenAI `/v1` 前端——无论在哪一端聊天，记忆、提醒与语音状态实时同源。
-3. **护 KV 缓存 L0 灵魂冻结 + 睡眠记忆蒸馏**：核心灵魂前缀经 SHA-256 冻结锁定，内置工具采用尾插式注册，最大程度守护长会话 Prompt KV 缓存命中率（降延迟、省 Token）；配合 `shinobu sleep` 与记忆蒸馏机制，把冗长对话提纯沉淀为结构化事实与剧集，避免无休止堆叠原始聊天记录。
-4. **一份零依赖同源底座，本地即玩 ↔ 云端 7×24 混动无缝升级**：核心 `dependencies = []` 纯 Python 标准库实现；纯本机 3 分钟即可跑全套，上云后开启 `--engine hybrid` 混动路由——个人电脑开机时自动借力本机原生 `agy_cli` 算力与边端触手，关机或休眠时秒级切回云端大脑不掉线。
+3. **护 KV 缓存 L0 灵魂冻结 + 自适应思考棘轮 + 空闲自动归档**：核心灵魂前缀经 SHA-256 冻结锁定，内置工具采用尾插式注册；内置 `ModelComplexityClassifier` 双通道自适应分类器（寒暄/上限 `0ms` 短路、`600ms` Fail-open、单窗只升不降棘轮与工具续轮档位复用），确保零 KV 缓存击穿；静默满 30 分钟（`SHINOBU_EPISODE_IDLE_ARCHIVE_SEC=1800`）零 Token 自动归档切新窗并恢复 `auto` 档，配合 `shinobu sleep` 将冗长对话蒸馏为结构化事实与剧集。
+4. **一份零依赖同源底座，本地即玩 ↔ 云端 7×24 混动无缝升级**：核心 `dependencies = []` 纯 Python 标准库实现；纯本机 3 分钟即可跑全套，上云后开启 `--engine hybrid` 混动路由——个人电脑开机时自动借力本机原生 `agy_cli` 算力与边端触手（全链路透传单轮 `reasoning_effort`），关机或休眠时秒级切回云端大脑不掉线。
 5. **原生双向 MCP 枢纽（既是客户端，也是服务端）**：既可通过 `shinobu mcp` 一键探测并无损安装零 Key 社区精选 MCP 工具集（支持与 `agy` 桥接），也可通过 `shinobu mcp-serve`（stdio）或云端 `POST /mcp` 将 Shinobu 的记忆与提醒反向暴露给外部 AI IDE / Agent 协作调用。
 6. **主动心跳、自然语言定提醒与三端按需情感语音**：支持聊天中随口定时提醒（`schedule_reminder` / `list_reminders`）与 Telegram `/remind`；Web 记忆本、桌宠抽屉与 Telegram 语音条三端原生打通 `POST /api/tts` 按需语音合成，未配语音后端时优雅提示、零打扰。
-7. **插件故障隔离与开箱自检**：外部私有扩展通过标准 `entry_points` 挂载，任何单个插件异常均被微内核隔离，绝不拖垮主进程；内置 `shinobu doctor` 一键诊断原生 `agy_sdk`/`agy_cli` 驱动、隔离目录与插件健康并自动脱敏密钥。
+7. **插件故障隔离与开箱自检**：外部私有扩展通过标准 `entry_points` 挂载，任何单个插件异常均被微内核隔离，绝不拖垮主进程；内置 `shinobu doctor` 一键诊断原生 `agy_sdk`/`agy_cli` 驱动、隔离目录、自适应分类器与插件健康并自动脱敏密钥。
 
 ---
 
@@ -206,7 +206,7 @@ shinobu avatar --source ./my_avatars --name custom
 | `/new` | 秒开新对话（快速归档旧对话）。 |
 | `/sleep` | 整理记忆并归档当前对话。 |
 | `/brain [cloud\|hybrid\|local]` / `/mode` | 查看或切换推理引擎（云端 / 混合 / 本地）。 |
-| `/think [off\|low\|medium\|high]` / `/effort` | 查看或调整思考深度（关闭 / 低 / 中 / 高）。 |
+| `/think [default\|off\|low\|medium\|high]` / `/effort` | 查看或调整思考深度（`default` 恢复自动自适应棘轮，或手动锁定关闭 / 低 / 中 / 高）。 |
 | `/status` | 查看云端运行状态、活跃引擎与待审批数量。 |
 | `/nodes` | 查看当前在线的本机 PC / Colab GPU 节点。 |
 | `/voice [on\|off]` | 查看或按需开关语音条回复。 |

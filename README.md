@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  <a href="pyproject.toml"><img src="https://img.shields.io/badge/version-v1.0.0-be123c" alt="Version v1.0.0" /></a>
+  <a href="pyproject.toml"><img src="https://img.shields.io/badge/version-v1.2.0-be123c" alt="Version v1.2.0" /></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-PolyForm%20Noncommercial%201.0.0-e11d48.svg" alt="License: PolyForm Noncommercial 1.0.0" /></a>
   <a href="pyproject.toml"><img src="https://img.shields.io/badge/python-3.10%2B%20(0%20deps)-3776AB.svg" alt="Python 3.10+ (0 deps)" /></a>
   <img src="https://img.shields.io/badge/network-127.0.0.1%20%2F%20Tailscale-059669" alt="Loopback and Tailscale" />
@@ -60,13 +60,13 @@ Most desktop pets and chat wrappers stop at being **chat-only static character c
 
 Core engineering highlights:
 
-1. **Native Non-Proxy Google Antigravity Drivers (`agy_cli` & `agy_sdk`) + Multi-Engine Flexibility**: Strictly zero reverse-proxying, zero traffic spoofing, and zero credential scraping — connects directly through the official `agy` CLI (persistent `stream-json` worker, default engine for `shinobu node`) or the official `google-antigravity` Python SDK (lazy-loaded optional extra `.[agy-sdk]` supporting `gemini` / `openai_local` / `litert` modes). All runtime state and session maps stay isolated under `$SHINOBU_HOME/runtime/` without polluting your main Antigravity workspace, while remaining equally compatible with standard `openai_compat` endpoints (cloud APIs / Ollama / vLLM) and `--engine hybrid`.
+1. **Native Non-Proxy Google Antigravity Drivers (`agy_cli` & `agy_sdk`) + Multi-Engine Flexibility**: Strictly zero reverse-proxying, zero traffic spoofing, and zero credential scraping — connects directly through the official `agy` CLI (persistent `stream-json` worker, default engine for `shinobu node`, with `--add-dir` / `--settings` / `--dangerously-skip-permissions` controls and silent Windows `CREATE_NO_WINDOW` spawning) or the official `google-antigravity` Python SDK (lazy-loaded optional extra `.[agy-sdk]` supporting `gemini` / `openai_local` / `litert` modes). All runtime state and session maps stay isolated under `$SHINOBU_HOME/runtime/` without polluting your main Antigravity workspace, while remaining equally compatible with standard `openai_compat` endpoints (cloud APIs / Ollama / vLLM) and `--engine hybrid`.
 2. **One Living Soul Across Every Surface (Not a Static Character Card)**: A single persistent brain and local SQLite memory vault simultaneously powers the built-in Web Memory Console (`shinobu ui`), transparent desktop pet (`shinobu pet`), mobile Telegram (`shinobu telegram`), and any external OpenAI `/v1` frontend — switching surfaces never resets memory, schedule, or voice state.
-3. **KV-Cache-Friendly Frozen L0 Prefix + Sleep Memory Consolidation**: The core soul prefix is SHA-256 frozen and built-in tools are tail-appended to maximize long-session Prompt KV-cache hit rates (lower latency and token spend); `shinobu sleep` and memory consolidation distill verbose episodes into compact structured facts & episodes in SQLite instead of bloating context windows.
-4. **One Zero-Dependency Codebase: 3-Minute Local Play ↔ 7×24 Hybrid Cloud**: Pure Python standard library (`dependencies = []`) runs standalone on a laptop in minutes, and scales seamlessly into `--engine hybrid` cloud hosting — routing tasks to your local PC's native `agy_cli` edge node while awake and falling back to the cloud engine in seconds when your PC sleeps.
+3. **KV-Cache-Friendly Frozen L0 Prefix + Adaptive Complexity Ratchet + Idle Auto-Archive**: The core soul prefix is SHA-256 frozen and built-in tools are tail-appended; `ModelComplexityClassifier` selects thinking effort dynamically (`0ms` short-circuit on greetings/ceilings, `600ms` fail-open, upward-only per-episode ratchet, and tool-continuation effort reuse) with zero KV-cache thrashing. After 30 minutes of inactivity (`SHINOBU_EPISODE_IDLE_ARCHIVE_SEC=1800`), episodes auto-archive at zero token cost and reset to `auto` effort, complemented by `shinobu sleep` memory distillation.
+4. **One Zero-Dependency Codebase: 3-Minute Local Play ↔ 7×24 Hybrid Cloud**: Pure Python standard library (`dependencies = []`) runs standalone on a laptop in minutes, and scales seamlessly into `--engine hybrid` cloud hosting — routing tasks (with end-to-end per-turn `reasoning_effort` propagation) to your local PC's native `agy_cli` edge node while awake and falling back to the cloud engine in seconds when your PC sleeps.
 5. **Native Bidirectional MCP Hub (Client + Server)**: Discover and non-destructively install curated zero-key community MCP presets via `shinobu mcp` (including safe `agy` bridging), or expose Shinobu's own memory and reminder tools back to external AI IDEs and agents via `shinobu mcp-serve` (stdio) or remote `POST /mcp`.
 6. **Proactive Heartbeat, Natural-Language Reminders & Tri-Surface On-Demand TTS**: Schedule reminders conversationally (`schedule_reminder` / `list_reminders`) or via Telegram `/remind`, and trigger on-demand emotional voice playback (`POST /api/tts`) across Web, Desktop Pet, and Telegram with graceful degradation when no TTS backend is configured.
-7. **Fault-Isolated Microkernel & Built-In Self-Diagnostics**: External private packs attach via Python `entry_points` with strict per-plugin fault isolation (a broken extension never crashes the kernel), complemented by `shinobu doctor` for one-command native `agy_sdk`/`agy_cli` driver, isolation directory, and redacted-secret health checks.
+7. **Fault-Isolated Microkernel & Built-In Self-Diagnostics**: External private packs attach via Python `entry_points` with strict per-plugin fault isolation (a broken extension never crashes the kernel), complemented by `shinobu doctor` for one-command native `agy_sdk`/`agy_cli` driver, isolation directory, adaptive complexity classifier, and redacted-secret health checks.
 
 ---
 
@@ -206,7 +206,7 @@ When you are ready for an always-on companion reachable from your phone and capa
 | `/new` | Start a new conversation immediately (quickly archives the current one). |
 | `/sleep` | Consolidate memories and archive the current conversation. |
 | `/brain [cloud\|hybrid\|local]` / `/mode` | Inspect or switch the reasoning engine (`cloud`, `hybrid`, or `local`). |
-| `/think [off\|low\|medium\|high]` / `/effort` | Inspect or adjust thinking effort (`off`, `low`, `medium`, or `high`). |
+| `/think [default\|off\|low\|medium\|high]` / `/effort` | Inspect or adjust thinking effort (`default` restores automatic adaptive ratchet, or lock `off`, `low`, `medium`, or `high`). |
 | `/status` | Inspect runtime health, active engine, and pending approval count. |
 | `/nodes` | List currently online local PC / Colab GPU edge nodes. |
 | `/voice [on\|off]` | Check or toggle on-demand voice note replies. |

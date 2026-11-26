@@ -845,11 +845,11 @@ class TestHeartbeatAutoArchive(unittest.TestCase):
         self.assertEqual(calls["count"], 0)
 
     def test_auto_archive_triggers_independently_and_resets_after_activity(self) -> None:
-        import time
         from shinobu_core.runtime.heartbeat import HeartbeatLoop
         from shinobu_core.runtime.state_machine import PetStateMachine
 
-        sm = PetStateMachine()
+        now = {"t": 100.0}
+        sm = PetStateMachine(clock=lambda: now["t"])
         archive_calls = {"count": 0}
         sleep_calls = {"count": 0}
         hb = HeartbeatLoop(
@@ -857,11 +857,11 @@ class TestHeartbeatAutoArchive(unittest.TestCase):
             state_machine=sm,
             donut_after_sec=10.0,
             sleepy_after_sec=20.0,
-            auto_archive_after_sec=0.05,
+            auto_archive_after_sec=30.0,
             on_auto_archive=lambda: archive_calls.__setitem__(
                 "count", archive_calls["count"] + 1
             ),
-            auto_sleep_after_sec=0.14,
+            auto_sleep_after_sec=120.0,
             on_auto_sleep=lambda: sleep_calls.__setitem__(
                 "count", sleep_calls["count"] + 1
             ),
@@ -872,14 +872,14 @@ class TestHeartbeatAutoArchive(unittest.TestCase):
         self.assertEqual(sleep_calls["count"], 0)
 
         # Cross archive threshold first (sleep threshold not reached yet)
-        time.sleep(0.07)
+        now["t"] += 35.0
         hb.tick_once()
         hb.tick_once()
         self.assertEqual(archive_calls["count"], 1)
         self.assertEqual(sleep_calls["count"], 0)
 
         # Cross sleep threshold too: sleep fires once, archive does not double-fire
-        time.sleep(0.09)
+        now["t"] += 90.0
         hb.tick_once()
         hb.tick_once()
         self.assertEqual(archive_calls["count"], 1)
@@ -888,7 +888,7 @@ class TestHeartbeatAutoArchive(unittest.TestCase):
         # Activity resets both debounce flags
         sm.transition("idle", reason="user_chat", touch_activity=True)
         hb.tick_once()
-        time.sleep(0.07)
+        now["t"] += 35.0
         hb.tick_once()
         self.assertEqual(archive_calls["count"], 2)
         self.assertEqual(sleep_calls["count"], 1)
