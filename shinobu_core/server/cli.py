@@ -153,7 +153,7 @@ def _build_engine(
         cloud_fallback = _build_engine(kernel, cloud_engine_name)
         registry = worker_registry if worker_registry is not None else WorkerRegistry()
         raw_timeout = os.environ.get("SHINOBU_HYBRID_TIMEOUT", "").strip()
-        timeout_sec = float(raw_timeout) if raw_timeout else 90.0
+        timeout_sec = float(raw_timeout) if raw_timeout else 180.0
         primary_cap = os.environ.get("SHINOBU_HYBRID_CAPABILITY", "").strip() or "brain"
         return create_engine(
             "hybrid",
@@ -215,6 +215,12 @@ def _build_engine(
         retry_base_delay_raw = os.environ.get("SHINOBU_RETRY_BASE_DELAY", "").strip()
         if retry_base_delay_raw:
             kwargs["retry_base_delay_sec"] = float(retry_base_delay_raw)
+        api_timeout_raw = os.environ.get("SHINOBU_API_TIMEOUT", "").strip()
+        if api_timeout_raw:
+            api_timeout = float(api_timeout_raw)
+            if api_timeout <= 0:
+                raise ValueError("SHINOBU_API_TIMEOUT must be > 0")
+            kwargs["timeout"] = api_timeout
     elif norm in ("agy_sdk", "agy-sdk"):
         runtime_dir = (kernel.home.expanduser().resolve() / "runtime")
         save_dir = (runtime_dir / "agy_sdk_save").resolve()
@@ -496,7 +502,20 @@ def build_daemon(
         if raw_sandbox is not None:
             sandbox_path = Path(raw_sandbox).expanduser().resolve()
             sandbox_path.mkdir(parents=True, exist_ok=True)
-            sandbox_terminal = CloudSandboxTerminal(sandbox_path, gate)
+            raw_approval_timeout = os.environ.get("SHINOBU_APPROVAL_TIMEOUT_SEC", "").strip()
+            approval_timeout_sec = 120.0
+            if raw_approval_timeout:
+                try:
+                    parsed_approval_timeout = float(raw_approval_timeout)
+                    if parsed_approval_timeout > 0:
+                        approval_timeout_sec = parsed_approval_timeout
+                except ValueError:
+                    pass
+            sandbox_terminal = CloudSandboxTerminal(
+                sandbox_path,
+                gate,
+                approval_timeout_sec=approval_timeout_sec,
+            )
             for tool in sandbox_terminal.build_tools():
                 kernel.register_tool(tool)
 
@@ -933,7 +952,7 @@ def build_telegram_bridge(
     daemon_url: str,
     daemon_token: str,
     api_base: str = "https://api.telegram.org",
-    timeout_sec: float = 120.0,
+    timeout_sec: float = 600.0,
     quiet_hours: str | None = None,
     tz_offset_hours: float | None = None,
 ) -> TelegramBotBridge:
@@ -1393,6 +1412,17 @@ def _cmd_telegram(args: argparse.Namespace, kernel: ShinobuKernel) -> int:
     )
     api_base = (getattr(args, "api_base", None) or "").strip() or "https://api.telegram.org"
     approval_poll_sec = max(0.5, float(getattr(args, "approval_poll_sec", 2.0)))
+    raw_chat_timeout = getattr(args, "chat_timeout_sec", None)
+    if raw_chat_timeout is None:
+        env_chat_timeout = os.environ.get("SHINOBU_TELEGRAM_CHAT_TIMEOUT", "").strip()
+        if env_chat_timeout:
+            try:
+                parsed_chat_timeout = float(env_chat_timeout)
+                if parsed_chat_timeout > 0:
+                    raw_chat_timeout = parsed_chat_timeout
+            except ValueError:
+                raw_chat_timeout = None
+    chat_timeout_sec = max(1.0, float(raw_chat_timeout)) if raw_chat_timeout is not None else 600.0
 
     env_quiet = os.environ.get("SHINOBU_QUIET_HOURS")
     quiet_hours = "01:00-08:00" if env_quiet is None else env_quiet.strip()
@@ -1408,6 +1438,7 @@ def _cmd_telegram(args: argparse.Namespace, kernel: ShinobuKernel) -> int:
         daemon_url=daemon_url,
         daemon_token=daemon_token,
         api_base=api_base,
+        timeout_sec=chat_timeout_sec,
         quiet_hours=quiet_hours,
         tz_offset_hours=tz_offset_hours,
     )
@@ -1467,6 +1498,11 @@ def _cmd_telegram(args: argparse.Namespace, kernel: ShinobuKernel) -> int:
                     if aid not in pushed_ids:
                         bridge.push_approval_prompt(item)
                         pushed_ids.add(aid)
+                for stale_id in list(pushed_ids - active_ids):
+                    try:
+                        getattr(bridge, "close_approval_prompt", lambda _id: False)(stale_id)
+                    except Exception:
+                        pass
                 pushed_ids.intersection_update(active_ids)
             except Exception:
                 pass
@@ -2958,6 +2994,12 @@ def build_parser(kernel: ShinobuKernel | None = None) -> argparse.ArgumentParser
         type=float,
         default=2.0,
         help="Interval in seconds to poll pending L1 approvals and push Inline Keyboard prompts (default: 2.0).",
+    )
+    p_telegram.add_argument(
+        "--chat-timeout-sec",
+        type=float,
+        default=None,
+        help="Timeout in seconds for /chat calls from Telegram bridge to daemon (env: SHINOBU_TELEGRAM_CHAT_TIMEOUT, default: 600.0).",
     )
     p_telegram.set_defaults(func=_cmd_telegram)
 

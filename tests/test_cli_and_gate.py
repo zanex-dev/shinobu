@@ -1387,6 +1387,281 @@ class TestCliAndDualGate(unittest.TestCase):
                 daemon.stop()
                 store.close()
 
+    def test_timeout_ladder_defaults_and_env_overrides(self) -> None:
+        """Timeout defaults (180s engine/hybrid, 600s telegram) and env overrides wire cleanly."""
+        import inspect
+        from shinobu_core.cloud.hybrid_engine import HybridRouterEngine
+        from shinobu_core.engines.openai_compat import OpenAICompatEngine
+        from shinobu_core.server.cli import WorkerRegistry, _build_engine
+
+        self.assertEqual(inspect.signature(OpenAICompatEngine.__init__).parameters["timeout"].default, 180.0)
+        self.assertEqual(
+            inspect.signature(HybridRouterEngine.__init__).parameters["remote_timeout_sec"].default,
+            180.0,
+        )
+        self.assertEqual(inspect.signature(build_telegram_bridge).parameters["timeout_sec"].default, 600.0)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / "shinobu_home"
+            sandbox_dir = Path(tmp) / "sandbox"
+            kernel = ShinobuKernel(home=home)
+
+            # OpenAICompatEngine via SHINOBU_API_TIMEOUT (default 180.0, override 240.0)
+            base_env = {
+                "SHINOBU_DISABLE_PLUGINS": "1",
+                "SHINOBU_BASE_URL": "http://127.0.0.1:9999/v1",
+                "SHINOBU_MODEL": "test-model",
+                "SHINOBU_API_KEY": "test-key",
+                "SHINOBU_API_TIMEOUT": "",
+                "SHINOBU_HYBRID_TIMEOUT": "",
+                "SHINOBU_HYBRID_FALLBACK_ENGINE": "mock",
+            }
+            with mock.patch.dict(os.environ, base_env, clear=False):
+                eng_default = _build_engine(kernel, "openai_compat")
+                self.assertIsInstance(eng_default, OpenAICompatEngine)
+                self.assertEqual(eng_default.timeout, 180.0)
+
+                hybrid_default = _build_engine(kernel, "hybrid", worker_registry=WorkerRegistry())
+                self.assertIsInstance(hybrid_default, HybridRouterEngine)
+                self.assertEqual(hybrid_default.remote_timeout_sec, 180.0)
+
+            override_env = dict(base_env)
+            override_env["SHINOBU_API_TIMEOUT"] = "245.5"
+            override_env["SHINOBU_HYBRID_TIMEOUT"] = "210.0"
+            with mock.patch.dict(os.environ, override_env, clear=False):
+                eng_custom = _build_engine(kernel, "openai_compat")
+                self.assertEqual(eng_custom.timeout, 245.5)
+
+                hybrid_custom = _build_engine(kernel, "hybrid", worker_registry=WorkerRegistry())
+                self.assertEqual(hybrid_custom.remote_timeout_sec, 210.0)
+
+            # SHINOBU_APPROVAL_TIMEOUT_SEC wires to CloudSandboxTerminal
+            captured_approval_timeouts: list[float] = []
+            orig_cls = None
+            from shinobu_core.server import cli as cli_mod
+
+            orig_cls = cli_mod.CloudSandboxTerminal
+
+            def _capturing_terminal(*args: Any, **kwargs: Any) -> Any:
+                captured_approval_timeouts.append(float(kwargs.get("approval_timeout_sec", 120.0)))
+                return orig_cls(*args, **kwargs)
+
+            with (
+                mock.patch.dict(
+                    os.environ,
+                    {"SHINOBU_DISABLE_PLUGINS": "1", "SHINOBU_APPROVAL_TIMEOUT_SEC": "195"},
+                    clear=False,
+                ),
+                mock.patch.object(cli_mod, "CloudSandboxTerminal", side_effect=_capturing_terminal),
+            ):
+                daemon, _store = build_daemon(
+                    ShinobuKernel(home=Path(tmp) / "home2"),
+                    engine_name="mock",
+                    port=0,
+                    token="tok-timeout-test",
+                    cloud_sandbox_dir=sandbox_dir,
+                )
+                daemon.stop()
+                _store.close()
+            self.assertEqual(captured_approval_timeouts, [195.0])
+
+    def test_openai_compat_timeout_retry_and_fallback(self) -> None:
+        """OpenAICompatEngine retries first-byte TimeoutError / URLError(TimeoutError) and falls back."""
+        import urllib.error
+        from shinobu_core.engines.openai_compat import OpenAICompatEngine
+
+        class _FakeResp:
+            def __init__(self, body: bytes) -> None:
+                self._body = body
+
+            def __enter__(self) -> "_FakeResp":
+                return self
+
+            def __exit__(self, *args: Any) -> None:
+                return None
+
+            def read(self) -> bytes:
+                return self._body
+
+        ok_body = json.dumps(
+            {"choices": [{"message": {"role": "assistant", "content": "ok after retry"}}]}
+        ).encode("utf-8")
+
+        # 1) TimeoutError + URLError(TimeoutError) retried within retry_max_attempts=3
+        sleeps: list[float] = []
+        attempts = {"n": 0}
+
+        def _flaky_urlopen(req: Any, timeout: float = 0.0) -> Any:
+            attempts["n"] += 1
+            if attempts["n"] == 1:
+                raise TimeoutError("The read operation timed out")
+            if attempts["n"] == 2:
+                raise urllib.error.URLError(TimeoutError("handshake timed out"))
+            return _FakeResp(ok_body)
+
+        engine = OpenAICompatEngine(
+            base_url="http://127.0.0.1:9999/v1",
+            model="primary-model",
+            fallback_models=["fallback-model"],
+            retry_max_attempts=3,
+            retry_base_delay_sec=0.5,
+            _sleep=sleeps.append,
+        )
+        with mock.patch("urllib.request.urlopen", side_effect=_flaky_urlopen):
+            resp = engine._open_request({"messages": []}, stream=False)
+            self.assertEqual(resp.read(), ok_body)
+        self.assertEqual(attempts["n"], 3)
+        self.assertEqual(len(sleeps), 2)
+        self.assertEqual(engine.last_model_used, "primary-model")
+
+        # 2) Exhausted primary timeouts fall back to fallback_models
+        seen_models: list[str] = []
+        sleeps_fb: list[float] = []
+
+        def _fallback_urlopen(req: Any, timeout: float = 0.0) -> Any:
+            payload = json.loads(req.data.decode("utf-8"))
+            model_name = payload["model"]
+            seen_models.append(model_name)
+            if model_name == "primary-model":
+                raise TimeoutError("The read operation timed out")
+            return _FakeResp(ok_body)
+
+        engine_fb = OpenAICompatEngine(
+            base_url="http://127.0.0.1:9999/v1",
+            model="primary-model",
+            fallback_models=["fallback-model"],
+            retry_max_attempts=2,
+            retry_base_delay_sec=0.2,
+            _sleep=sleeps_fb.append,
+        )
+        with mock.patch("urllib.request.urlopen", side_effect=_fallback_urlopen):
+            resp2 = engine_fb._open_request({"messages": []}, stream=False)
+            self.assertEqual(resp2.read(), ok_body)
+        self.assertEqual(seen_models, ["primary-model", "primary-model", "fallback-model"])
+        self.assertEqual(engine_fb.last_model_used, "fallback-model")
+        self.assertEqual(len(sleeps_fb), 1)
+
+        # 3) Non-timeout URLError still fails immediately without retry
+        conn_calls = {"n": 0}
+
+        def _conn_refused(req: Any, timeout: float = 0.0) -> Any:
+            conn_calls["n"] += 1
+            raise urllib.error.URLError("Connection refused")
+
+        with mock.patch("urllib.request.urlopen", side_effect=_conn_refused):
+            with self.assertRaises(RuntimeError) as ctx:
+                engine_fb._open_request({"messages": []}, stream=False)
+        self.assertIn("connection failed", str(ctx.exception))
+        self.assertEqual(conn_calls["n"], 1)
+
+    def test_telegram_cmd_chat_timeout_and_watcher_auto_close(self) -> None:
+        """shinobu telegram passes chat timeout (CLI > env > 600s) and closes stale approvals in watcher."""
+        import threading
+        from shinobu_core.server import cli as cli_mod
+
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / "tg_home"
+            captured_timeouts: list[float] = []
+            pushed: list[str] = []
+            closed: list[str] = []
+            poll_seq = [
+                {"pending": [{"approval_id": "apr_stale_1", "tool_name": "run_command"}]},
+                {"pending": []},
+                {"pending": []},
+            ]
+            poll_idx = {"n": 0}
+            closed_done = threading.Event()
+
+            class _FakeBridge:
+                def start_polling(self) -> None:
+                    pass
+
+                def stop_polling(self) -> None:
+                    pass
+
+                def stop(self) -> None:
+                    pass
+
+                def push_approval_prompt(self, item: dict[str, Any]) -> dict[str, Any]:
+                    pushed.append(str(item.get("approval_id", "")))
+                    return {"ok": True}
+
+                def close_approval_prompt(self, aid: str) -> bool:
+                    closed.append(aid)
+                    closed_done.set()
+                    return True
+
+            class _WaitCloseEventWorker:
+                def __init__(self, *_args: Any, **_kwargs: Any) -> None:
+                    pass
+
+                def start(self) -> None:
+                    closed_done.wait(timeout=3.0)
+                    raise KeyboardInterrupt
+
+                def stop(self, *_args: Any, **_kwargs: Any) -> None:
+                    pass
+
+            class _NoopEventWorker:
+                def __init__(self, *_args: Any, **_kwargs: Any) -> None:
+                    pass
+
+                def start(self) -> None:
+                    raise KeyboardInterrupt
+
+                def stop(self, *_args: Any, **_kwargs: Any) -> None:
+                    pass
+
+            def _fake_build_bridge(**kwargs: Any) -> _FakeBridge:
+                captured_timeouts.append(float(kwargs["timeout_sec"]))
+                return _FakeBridge()
+
+            def _fake_daemon_call(*_args: Any, **_kwargs: Any) -> Any:
+                idx = poll_idx["n"]
+                poll_idx["n"] += 1
+                if idx < len(poll_seq):
+                    return poll_seq[idx]
+                return {"pending": []}
+
+            base_env = {
+                "SHINOBU_DISABLE_PLUGINS": "1",
+                "SHINOBU_TELEGRAM_BOT_TOKEN": "123456:TEST_TOKEN",
+                "SHINOBU_TELEGRAM_CHAT_ID": "99887766",
+                "SHINOBU_DAEMON_URL": "http://127.0.0.1:8787",
+                "SHINOBU_TOKEN": "tok-test",
+                "SHINOBU_TELEGRAM_CHAT_TIMEOUT": "",
+            }
+
+            # Case 1: default 600.0 + watcher push & auto-close stale approval
+            with (
+                mock.patch.dict(os.environ, base_env, clear=False),
+                mock.patch.object(cli_mod, "build_telegram_bridge", side_effect=_fake_build_bridge),
+                mock.patch.object(cli_mod, "EventStreamWorker", _WaitCloseEventWorker),
+                mock.patch.object(cli_mod, "_daemon_http_call", side_effect=_fake_daemon_call),
+                contextlib.redirect_stdout(io.StringIO()),
+            ):
+                rc = main(["--home", str(home), "telegram", "--approval-poll-sec", "0.5"])
+            self.assertEqual(rc, 0)
+            self.assertEqual(pushed, ["apr_stale_1"])
+            self.assertEqual(closed, ["apr_stale_1"])
+            self.assertEqual(captured_timeouts[-1], 600.0)
+
+            # Case 2: SHINOBU_TELEGRAM_CHAT_TIMEOUT override, and CLI --chat-timeout-sec takes precedence
+            env_override = dict(base_env)
+            env_override["SHINOBU_TELEGRAM_CHAT_TIMEOUT"] = "420"
+            with (
+                mock.patch.dict(os.environ, env_override, clear=False),
+                mock.patch.object(cli_mod, "build_telegram_bridge", side_effect=_fake_build_bridge),
+                mock.patch.object(cli_mod, "EventStreamWorker", _NoopEventWorker),
+                mock.patch.object(cli_mod, "_daemon_http_call", return_value={"pending": []}),
+                contextlib.redirect_stdout(io.StringIO()),
+            ):
+                rc_env = main(["--home", str(home), "telegram"])
+                rc_cli = main(["--home", str(home), "telegram", "--chat-timeout-sec", "750"])
+            self.assertEqual(rc_env, 0)
+            self.assertEqual(rc_cli, 0)
+            self.assertEqual(captured_timeouts[-2:], [420.0, 750.0])
+
     def test_cloud_cli_telegram_wiring_and_missing_args(self) -> None:
         """shinobu telegram validates required creds and wires bridge callbacks to DaemonServer."""
         import threading

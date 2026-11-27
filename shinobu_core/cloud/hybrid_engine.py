@@ -114,7 +114,7 @@ class HybridRouterEngine:
         registry: WorkerRegistry,
         *,
         primary_capability: str = "brain",
-        remote_timeout_sec: float = 90.0,
+        remote_timeout_sec: float = 180.0,
         connect_timeout_sec: float = 3.0,
         primary_role: str | None = None,
         on_route: Callable[[dict[str, Any]], None] | None = None,

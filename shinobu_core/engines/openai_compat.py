@@ -178,7 +178,7 @@ class OpenAICompatEngine:
         base_url: str,
         model: str,
         api_key: str = "",
-        timeout: float = 60.0,
+        timeout: float = 180.0,
         *,
         temperature: float | None = None,
         extra_headers: dict[str, str] | None = None,
@@ -392,7 +392,7 @@ class OpenAICompatEngine:
     def _build_tools(tools: Sequence[ToolSpec]) -> list[dict[str, Any]]:
         return [{"type": "function", "function": tool.to_schema()} for tool in tools]
 
-    def _compute_retry_delay(self, exc: urllib.error.HTTPError, attempt: int) -> float:
+    def _compute_retry_delay(self, exc: Exception, attempt: int) -> float:
         headers = getattr(exc, "headers", None)
         raw_retry_after = headers.get("Retry-After") if headers is not None else None
         if raw_retry_after is not None:
@@ -469,10 +469,47 @@ class OpenAICompatEngine:
                         break
 
                     raise last_error from exc
-                except urllib.error.URLError as exc:
-                    raise RuntimeError(
-                        f"OpenAICompatEngine connection failed for {self.endpoint_url}: {exc.reason}"
-                    ) from exc
+                except (TimeoutError, urllib.error.URLError) as exc:
+                    if isinstance(exc, urllib.error.URLError):
+                        reason = exc.reason
+                        is_timeout = isinstance(reason, TimeoutError) or (
+                            isinstance(reason, OSError) and "timed out" in str(reason).lower()
+                        )
+                        if not is_timeout:
+                            raise RuntimeError(
+                                f"OpenAICompatEngine connection failed for {self.endpoint_url}: {reason}"
+                            ) from exc
+                        reason_detail = str(reason) or "timed out"
+                    else:
+                        reason_detail = str(exc) or "timed out"
+
+                    last_error = RuntimeError(
+                        f"OpenAICompatEngine timeout after {self.timeout:.1f}s from {self.endpoint_url}: {reason_detail}"
+                    )
+                    last_exc = exc
+
+                    if attempt + 1 < self.retry_max_attempts:
+                        delay = self._compute_retry_delay(exc, attempt)
+                        logger.warning(
+                            "OpenAICompatEngine timeout for model=%s (attempt %d/%d); retrying in %.2fs",
+                            candidate,
+                            attempt + 1,
+                            self.retry_max_attempts,
+                            delay,
+                        )
+                        self._sleep(delay)
+                        continue
+
+                    if model_idx + 1 < len(candidates):
+                        logger.warning(
+                            "OpenAICompatEngine timeout exhausted %d attempts for model=%s; falling back to model=%s",
+                            self.retry_max_attempts,
+                            candidate,
+                            candidates[model_idx + 1],
+                        )
+                        break
+
+                    raise last_error from exc
 
                 self.last_model_used = candidate
                 return response

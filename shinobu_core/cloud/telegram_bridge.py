@@ -25,6 +25,7 @@ from datetime import datetime, timedelta, timezone
 import inspect
 import json
 import logging
+import queue
 import re
 import threading
 import time
@@ -515,6 +516,9 @@ class TelegramBotBridge:
         self._offset: int = 0
         self._stop_event = threading.Event()
         self._poll_thread: threading.Thread | None = None
+        self._chat_queue: queue.Queue[str | None] = queue.Queue()
+        self._chat_worker_thread: threading.Thread | None = None
+        self._approval_messages: dict[str, tuple[int, str]] = {}
 
         self._quiet_hours_spec: str = str(quiet_hours or "").strip()
         self._quiet_window = parse_quiet_hours(self._quiet_hours_spec)
@@ -849,6 +853,7 @@ class TelegramBotBridge:
         *,
         reply_markup: dict[str, Any] | None = None,
         parse_mode: str | None = None,
+        disable_web_page_preview: bool = True,
     ) -> dict[str, Any]:
         """Send a plain-text message to the single allowlisted private chat."""
         parts = _split_long_text(str(text))
@@ -857,6 +862,7 @@ class TelegramBotBridge:
             payload: dict[str, Any] = {
                 "chat_id": self._allowed_chat_id,
                 "text": part,
+                "disable_web_page_preview": bool(disable_web_page_preview),
             }
             if parse_mode:
                 payload["parse_mode"] = parse_mode
@@ -1017,7 +1023,61 @@ class TelegramBotBridge:
                 ]
             ]
         }
-        return self.push_text("\n".join(lines), reply_markup=reply_markup)
+        prompt_text = "\n".join(lines)
+        resp = self.push_text(prompt_text, reply_markup=reply_markup)
+        result = resp.get("result") if isinstance(resp, dict) else None
+        raw_msg_id = result.get("message_id") if isinstance(result, dict) else None
+        if isinstance(raw_msg_id, int) and not isinstance(raw_msg_id, bool):
+            with self._state_lock:
+                self._approval_messages.pop(approval_id, None)
+                self._approval_messages[approval_id] = (raw_msg_id, prompt_text)
+                while len(self._approval_messages) > 512:
+                    oldest_key = next(iter(self._approval_messages))
+                    del self._approval_messages[oldest_key]
+        return resp
+
+    def close_approval_prompt(
+        self,
+        approval_id: str,
+        status_label: str = "⏱️ 审批已超时或已在其他终端处理",
+    ) -> bool:
+        """Dismiss inline buttons on an unresolved/expired approval prompt."""
+        aid = str(approval_id or "").strip()
+        if not aid:
+            return False
+        with self._state_lock:
+            record = self._approval_messages.pop(aid, None)
+        if record is None:
+            return False
+        message_id, prompt_text = record
+        label = str(status_label or "⏱️ 审批已超时或已在其他终端处理").strip()
+        base_text = str(prompt_text or "").strip()
+        new_text = (
+            f"{base_text}\n\n{label} ({aid})"
+            if base_text
+            else f"{label} ({aid})"
+        )
+        try:
+            self._call_json_api(
+                "editMessageText",
+                {
+                    "chat_id": self._allowed_chat_id,
+                    "message_id": message_id,
+                    "text": new_text,
+                    "disable_web_page_preview": True,
+                    "reply_markup": {"inline_keyboard": []},
+                },
+            )
+            return True
+        except Exception as exc:
+            if "message is not modified" in str(exc).lower():
+                return True
+            logger.warning(
+                "Failed to close approval prompt %s: %s",
+                aid,
+                self._redact_text(str(exc)),
+            )
+            return False
 
     def push_voice(self, ogg_bytes: bytes, caption: str = "") -> dict[str, Any]:
         """Send an OGG Opus voice note via stdlib multipart/form-data sendVoice."""
@@ -1092,6 +1152,8 @@ class TelegramBotBridge:
             actor,
         )
         resolved = True if decision_result is None else bool(decision_result)
+        with self._state_lock:
+            self._approval_messages.pop(approval_id, None)
 
         if resolved:
             status_label = "✅ 已批准" if approved else "❌ 已拒绝"
@@ -1113,16 +1175,23 @@ class TelegramBotBridge:
                 if original_text
                 else f"{status_label} ({approval_id})"
             )
-            self._call_json_api(
-                "editMessageText",
-                {
-                    "chat_id": self._allowed_chat_id,
-                    "message_id": message_id,
-                    "text": new_text,
-                    "reply_markup": {"inline_keyboard": []},
-                },
-            )
-            updated_message = True
+            try:
+                self._call_json_api(
+                    "editMessageText",
+                    {
+                        "chat_id": self._allowed_chat_id,
+                        "message_id": message_id,
+                        "text": new_text,
+                        "disable_web_page_preview": True,
+                        "reply_markup": {"inline_keyboard": []},
+                    },
+                )
+                updated_message = True
+            except Exception as exc:
+                if "message is not modified" in str(exc).lower():
+                    updated_message = True
+                else:
+                    raise
         else:
             self.push_text(f"{status_label} ({approval_id})")
 
@@ -2220,7 +2289,116 @@ class TelegramBotBridge:
             "reply": new_text,
         }
 
-    def handle_update(self, update: dict[str, Any]) -> dict[str, Any]:
+    def _execute_chat_turn(self, text: str) -> dict[str, Any]:
+        """Run a single chat turn with optional typing indicator and TTS push."""
+        typing_stop: threading.Event | None = None
+        typing_thread: threading.Thread | None = None
+        if self._typing_indicator:
+            self._safe_send_typing()
+            typing_stop = threading.Event()
+            refresh_sec = self._typing_refresh_sec
+
+            def _typing_loop() -> None:
+                assert typing_stop is not None
+                while not typing_stop.wait(refresh_sec):
+                    if self._stop_event.is_set():
+                        break
+                    self._safe_send_typing()
+
+            typing_thread = threading.Thread(
+                target=_typing_loop,
+                name="shinobu-tg-typing",
+                daemon=True,
+            )
+            typing_thread.start()
+
+        try:
+            reply_raw = self._on_chat(text)
+        except Exception as exc:
+            if typing_stop is not None:
+                typing_stop.set()
+            if typing_thread is not None:
+                typing_thread.join(timeout=1.0)
+            typing_stop = None
+            typing_thread = None
+            redacted = self._redact_text(str(exc)).strip() or type(exc).__name__
+            logger.exception("Telegram chat handler failed: %s", redacted)
+            try:
+                self.push_text(self._format_chat_error_notice(redacted))
+            except Exception:
+                pass
+            return {
+                "allowed": True,
+                "handled": True,
+                "action": "chat_error",
+                "error": redacted[:240],
+            }
+        finally:
+            if typing_stop is not None:
+                typing_stop.set()
+            if typing_thread is not None:
+                typing_thread.join(timeout=1.0)
+        reply_text = _coerce_text(reply_raw)
+        self.push_text(reply_text)
+
+        voice_sent = False
+        if self.voice_enabled and self._on_tts is not None and reply_text.strip():
+            try:
+                ogg_bytes = self._on_tts(reply_text)
+                if isinstance(ogg_bytes, (bytes, bytearray)) and len(ogg_bytes) > 0:
+                    self.push_voice(bytes(ogg_bytes))
+                    voice_sent = True
+            except Exception as exc:
+                logger.warning("TTS synthesis or sendVoice failed: %s", exc)
+
+        return {
+            "allowed": True,
+            "handled": True,
+            "action": "chat",
+            "reply": reply_text,
+            "voice_sent": voice_sent,
+        }
+
+    def _chat_worker_loop(self, chat_queue: queue.Queue[str | None]) -> None:
+        while not self._stop_event.is_set():
+            try:
+                item = chat_queue.get(timeout=0.2)
+            except queue.Empty:
+                continue
+            try:
+                if item is None or self._stop_event.is_set():
+                    break
+                self._execute_chat_turn(item)
+            except Exception as exc:
+                logger.exception(
+                    "Unhandled error in Telegram chat worker: %s",
+                    self._redact_text(str(exc)),
+                )
+            finally:
+                chat_queue.task_done()
+
+    def _enqueue_chat_turn(self, text: str) -> None:
+        with self._state_lock:
+            if (
+                self._chat_worker_thread is None
+                or not self._chat_worker_thread.is_alive()
+            ):
+                worker = threading.Thread(
+                    target=self._chat_worker_loop,
+                    args=(self._chat_queue,),
+                    name="shinobu-telegram-chat-worker",
+                    daemon=True,
+                )
+                self._chat_worker_thread = worker
+                worker.start()
+            self._chat_queue.put(text)
+
+    def handle_update(
+        self,
+        update: dict[str, Any],
+        *,
+        async_chat: bool = False,
+    ) -> dict[str, Any]:
         """Process a single Telegram Update after enforcing 4-layer isolation."""
         allowed, reason = filter_update(update, self._allowed_chat_id_str)
         if not allowed:
@@ -2320,75 +2498,23 @@ class TelegramBotBridge:
         if cmd in ("/help", "/commands"):
             return self._handle_help_command()
 
-        typing_stop: threading.Event | None = None
-        typing_thread: threading.Thread | None = None
-        if self._typing_indicator:
-            self._safe_send_typing()
-            typing_stop = threading.Event()
-            refresh_sec = self._typing_refresh_sec
-
-            def _typing_loop() -> None:
-                assert typing_stop is not None
-                while not typing_stop.wait(refresh_sec):
-                    if self._stop_event.is_set():
-                        break
-                    self._safe_send_typing()
-
-            typing_thread = threading.Thread(
-                target=_typing_loop,
-                name="shinobu-tg-typing",
-                daemon=True,
-            )
-            typing_thread.start()
-
-        try:
-            reply_raw = self._on_chat(text)
-        except Exception as exc:
-            if typing_stop is not None:
-                typing_stop.set()
-            if typing_thread is not None:
-                typing_thread.join(timeout=1.0)
-            typing_stop = None
-            typing_thread = None
-            redacted = self._redact_text(str(exc)).strip() or type(exc).__name__
-            logger.exception("Telegram chat handler failed: %s", redacted)
-            try:
-                self.push_text(self._format_chat_error_notice(redacted))
-            except Exception:
-                pass
+        if async_chat:
+            self._enqueue_chat_turn(text)
             return {
                 "allowed": True,
                 "handled": True,
-                "action": "chat_error",
-                "error": redacted[:240],
+                "action": "chat_queued",
+                "queued": True,
             }
-        finally:
-            if typing_stop is not None:
-                typing_stop.set()
-            if typing_thread is not None:
-                typing_thread.join(timeout=1.0)
-        reply_text = _coerce_text(reply_raw)
-        self.push_text(reply_text)
 
-        voice_sent = False
-        if self.voice_enabled and self._on_tts is not None and reply_text.strip():
-            try:
-                ogg_bytes = self._on_tts(reply_text)
-                if isinstance(ogg_bytes, (bytes, bytearray)) and len(ogg_bytes) > 0:
-                    self.push_voice(bytes(ogg_bytes))
-                    voice_sent = True
-            except Exception as exc:
-                logger.warning("TTS synthesis or sendVoice failed: %s", exc)
+        return self._execute_chat_turn(text)
 
-        return {
-            "allowed": True,
-            "handled": True,
-            "action": "chat",
-            "reply": reply_text,
-            "voice_sent": voice_sent,
-        }
-
-    def poll_once(self, *, timeout: int | None = None) -> list[dict[str, Any]]:
+    def poll_once(
+        self,
+        *,
+        timeout: int | None = None,
+        async_chat: bool = False,
+    ) -> list[dict[str, Any]]:
         """Fetch one batch of updates via getUpdates and handle them sequentially."""
         poll_timeout = self._poll_timeout_sec if timeout is None else max(0, int(timeout))
         with self._state_lock:
@@ -2415,7 +2541,7 @@ class TelegramBotBridge:
                     if update_id + 1 > self._offset:
                         self._offset = update_id + 1
             try:
-                outcomes.append(self.handle_update(item))
+                outcomes.append(self.handle_update(item, async_chat=async_chat))
             except Exception as exc:
                 logger.exception(
                     "Unhandled error while processing Telegram update %s: %s",
@@ -2436,7 +2562,7 @@ class TelegramBotBridge:
         consecutive_errors = 0
         while not self._stop_event.is_set():
             try:
-                self.poll_once()
+                self.poll_once(async_chat=True)
                 consecutive_errors = 0
             except Exception as exc:
                 consecutive_errors += 1
@@ -2469,13 +2595,26 @@ class TelegramBotBridge:
             return False
 
     def start_polling(self) -> bool:
-        """Start the background long-polling daemon thread (idempotent)."""
+        """Start the background long-polling and chat worker daemon threads (idempotent)."""
         with self._state_lock:
             if self._poll_thread is not None and self._poll_thread.is_alive():
                 return False
             if self._register_commands:
                 self.register_bot_commands()
             self._stop_event.clear()
+            if (
+                self._chat_worker_thread is None
+                or not self._chat_worker_thread.is_alive()
+            ):
+                self._chat_queue = queue.Queue()
+                chat_worker = threading.Thread(
+                    target=self._chat_worker_loop,
+                    args=(self._chat_queue,),
+                    name="shinobu-telegram-chat-worker",
+                    daemon=True,
+                )
+                self._chat_worker_thread = chat_worker
+                chat_worker.start()
             thread = threading.Thread(
                 target=self._polling_loop,
                 name="shinobu-telegram-poller",
@@ -2486,15 +2625,33 @@ class TelegramBotBridge:
             return True
 
     def stop(self, timeout: float = 5.0) -> None:
-        """Signal the background polling thread to stop and wait for exit."""
+        """Signal the background polling and chat worker threads to stop and wait for exit."""
         self._stop_event.set()
         with self._state_lock:
-            thread = self._poll_thread
-        if thread is not None and thread is not threading.current_thread():
-            thread.join(timeout=max(0.0, float(timeout)))
+            poll_thread = self._poll_thread
+            chat_thread = self._chat_worker_thread
+            chat_queue = self._chat_queue
+        try:
+            chat_queue.put_nowait(None)
+        except Exception:
+            pass
+
+        deadline = time.monotonic() + max(0.0, float(timeout))
+        current = threading.current_thread()
+        for thread in (poll_thread, chat_thread):
+            if thread is not None and thread is not current:
+                remaining = max(0.0, deadline - time.monotonic())
+                thread.join(timeout=remaining)
+
         with self._state_lock:
-            if self._poll_thread is thread and (thread is None or not thread.is_alive()):
+            if self._poll_thread is poll_thread and (
+                poll_thread is None or not poll_thread.is_alive()
+            ):
                 self._poll_thread = None
+            if self._chat_worker_thread is chat_thread and (
+                chat_thread is None or not chat_thread.is_alive()
+            ):
+                self._chat_worker_thread = None
 
 
 __all__ = [

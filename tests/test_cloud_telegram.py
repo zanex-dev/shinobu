@@ -774,6 +774,213 @@ class TestTelegramIsolatedBridge(unittest.TestCase):
         dup_res = bridge.handle_update(cb_update)
         self.assertFalse(dup_res["resolved"])
         self.assertIn("已过期或已处理", self.server.requests[1]["json"]["text"])
+        self.assertTrue(self.server.requests[1]["json"]["disable_web_page_preview"])
+
+    def test_push_text_disables_web_page_preview_by_default(self) -> None:
+        self.server.clear_requests()
+        self.bridge.push_text("Inspect https://example.com/config.json")
+        self.assertEqual(len(self.server.requests), 1)
+        self.assertEqual(self.server.requests[0]["method"], "sendMessage")
+        self.assertTrue(self.server.requests[0]["json"]["disable_web_page_preview"])
+
+        self.server.clear_requests()
+        self.bridge.push_text(
+            "Preview enabled https://example.com",
+            disable_web_page_preview=False,
+        )
+        self.assertEqual(len(self.server.requests), 1)
+        self.assertFalse(self.server.requests[0]["json"]["disable_web_page_preview"])
+
+    def test_close_approval_prompt_clears_keyboard_and_tolerates_not_modified(
+        self,
+    ) -> None:
+        self.server.clear_requests()
+        self.bridge.push_approval_prompt(
+            {
+                "approval_id": "apr_close_1",
+                "action": "terminal_exec",
+                "target": "curl https://example.com/payload.json",
+                "timeout_sec": 30,
+            }
+        )
+        send_req = self.server.requests[-1]
+        self.assertEqual(send_req["method"], "sendMessage")
+        self.assertTrue(send_req["json"]["disable_web_page_preview"])
+
+        self.server.clear_requests()
+        closed = self.bridge.close_approval_prompt("apr_close_1")
+        self.assertTrue(closed)
+        self.assertEqual(self.server.methods_called(), ["editMessageText"])
+        edit_payload = self.server.requests[0]["json"]
+        self.assertEqual(edit_payload["message_id"], 1001)
+        self.assertTrue(edit_payload["disable_web_page_preview"])
+        self.assertEqual(edit_payload["reply_markup"], {"inline_keyboard": []})
+        self.assertIn("⏱️ 审批已超时或已在其他终端处理", edit_payload["text"])
+        self.assertIn("apr_close_1", edit_payload["text"])
+
+        # Already closed: second call is a no-op returning False
+        self.server.clear_requests()
+        self.assertFalse(self.bridge.close_approval_prompt("apr_close_1"))
+        self.assertEqual(self.server.methods_called(), [])
+
+        # Tolerates Telegram "message is not modified" in both callback & close
+        self.bridge.push_approval_prompt(
+            {
+                "approval_id": "apr_not_mod",
+                "action": "terminal_exec",
+                "target": "echo hi",
+            }
+        )
+        orig_call = self.bridge._call_json_api
+
+        def _fake_not_modified(
+            method: str, payload: dict[str, Any], *, timeout: float | None = None
+        ) -> dict[str, Any]:
+            if method == "editMessageText":
+                raise RuntimeError("Bad Request: message is not modified")
+            return orig_call(method, payload, timeout=timeout)
+
+        self.bridge._call_json_api = _fake_not_modified  # type: ignore[method-assign]
+        try:
+            self.assertTrue(self.bridge.close_approval_prompt("apr_not_mod"))
+            cb_res = self.bridge.handle_update(
+                {
+                    "update_id": 61,
+                    "callback_query": {
+                        "id": "cbq_not_mod",
+                        "from": {"id": self.OWNER_ID},
+                        "message": {
+                            "message_id": 1001,
+                            "chat": {"id": self.OWNER_ID, "type": "private"},
+                            "text": "[L1 Approval Required]",
+                        },
+                        "data": "approve:apr_not_mod_cb",
+                    },
+                }
+            )
+            self.assertTrue(cb_res["handled"])
+            self.assertTrue(cb_res["message_updated"])
+        finally:
+            self.bridge._call_json_api = orig_call  # type: ignore[method-assign]
+
+    def test_polling_async_chat_does_not_deadlock_approval_callback(self) -> None:
+        captured_prompts: list[dict[str, Any]] = []
+        decision_holder: list[Any] = []
+        bridge_ref: list[TelegramBotBridge] = []
+
+        def _on_gate_event(event: Any) -> None:
+            if event.payload.get("phase") == "approval_requested" and bridge_ref:
+                bridge_ref[0].push_approval_prompt(event.payload)
+                captured_prompts.append(event.payload)
+
+        gate = ApprovalGate(on_event=_on_gate_event)
+
+        def _blocking_chat(text: str) -> str:
+            decision = gate.request_approval(
+                action="terminal_exec",
+                target=f"run:{text}",
+                detail="Needs owner click while polling",
+                timeout_sec=5.0,
+            )
+            decision_holder.append(decision)
+            return f"approved:{text}" if decision.approved else f"denied:{text}"
+
+        bridge = TelegramBotBridge(
+            bot_token=self.TOKEN,
+            allowed_chat_id=self.OWNER_ID,
+            on_chat=_blocking_chat,
+            on_approval_decision=gate.decide,
+            on_status=lambda: "alive",
+            on_nodes=lambda: [],
+            api_base=self.server.base_url,
+            poll_timeout_sec=0,
+        )
+        bridge_ref.append(bridge)
+        self.server.clear_requests()
+
+        self.assertTrue(bridge.start_polling())
+        try:
+            with self.server.lock:
+                self.server.queued_updates.append(
+                    {
+                        "update_id": 201,
+                        "message": {
+                            "message_id": 501,
+                            "chat": {"id": self.OWNER_ID, "type": "private"},
+                            "from": {"id": self.OWNER_ID},
+                            "text": "deploy-check",
+                        },
+                    }
+                )
+
+            deadline = time.monotonic() + 3.0
+            while not captured_prompts and time.monotonic() < deadline:
+                time.sleep(0.02)
+            self.assertEqual(len(captured_prompts), 1)
+            approval_id = captured_prompts[0]["approval_id"]
+
+            # While _blocking_chat is blocked on ApprovalGate, /status and approve click both pass immediately
+            with self.server.lock:
+                self.server.queued_updates.extend(
+                    [
+                        {
+                            "update_id": 202,
+                            "message": {
+                                "message_id": 502,
+                                "chat": {"id": self.OWNER_ID, "type": "private"},
+                                "from": {"id": self.OWNER_ID},
+                                "text": "/status",
+                            },
+                        },
+                        {
+                            "update_id": 203,
+                            "callback_query": {
+                                "id": "cbq_async_approve",
+                                "from": {"id": self.OWNER_ID},
+                                "message": {
+                                    "message_id": 1001,
+                                    "chat": {"id": self.OWNER_ID, "type": "private"},
+                                    "text": f"[L1 Approval Required]\nID: {approval_id}",
+                                },
+                                "data": f"approve:{approval_id}",
+                            },
+                        },
+                    ]
+                )
+
+            deadline = time.monotonic() + 3.0
+            final_reply_seen = False
+            while time.monotonic() < deadline:
+                with self.server.lock:
+                    sent_texts = [
+                        (r.get("json") or {}).get("text", "")
+                        for r in self.server.requests
+                        if r["method"] == "sendMessage"
+                    ]
+                if "approved:deploy-check" in sent_texts:
+                    final_reply_seen = True
+                    break
+                time.sleep(0.02)
+
+            self.assertTrue(
+                final_reply_seen,
+                "Expected chat worker to unblock and send final reply after callback approval",
+            )
+            self.assertEqual(len(decision_holder), 1)
+            self.assertTrue(decision_holder[0].approved)
+            self.assertEqual(decision_holder[0].status, "approved")
+            # Callback already popped the prompt record, so close_approval_prompt is a no-op
+            self.assertFalse(bridge.close_approval_prompt(approval_id))
+
+            with self.server.lock:
+                edit_reqs = [
+                    r for r in self.server.requests if r["method"] == "editMessageText"
+                ]
+            self.assertEqual(len(edit_reqs), 1)
+            self.assertTrue(edit_reqs[0]["json"]["disable_web_page_preview"])
+            self.assertIn("✅ 已批准", edit_reqs[0]["json"]["text"])
+        finally:
+            bridge.stop(timeout=2.0)
 
     def test_approval_reject_callback_denies_gate(self) -> None:
         gate = ApprovalGate()
@@ -1214,7 +1421,7 @@ class TestTelegramIsolatedBridge(unittest.TestCase):
         from shinobu_core.server.cli import build_telegram_bridge
 
         sig = inspect.signature(build_telegram_bridge)
-        self.assertEqual(sig.parameters["timeout_sec"].default, 120.0)
+        self.assertEqual(sig.parameters["timeout_sec"].default, 600.0)
 
         bridge = build_telegram_bridge(
             bot_token=self.TOKEN,
